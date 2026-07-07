@@ -1,9 +1,10 @@
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { config as dvrConfig } from './config.js';
 
 const require = createRequire(import.meta.url);
 const { Cam } = require('onvif');
-const VERSION = 'v139-milesight-onvif-fallback';
+const VERSION = 'v140-stable-legacy-fallback-session';
 
 interface OnvifCamera {
   id: string;
@@ -18,6 +19,7 @@ interface OnvifCamera {
 interface LegacySession {
   cam: any;
   startedAt: number;
+  fingerprint: string;
 }
 
 const sessions = new Map<string, LegacySession>();
@@ -44,10 +46,7 @@ function cfg() {
       Number(process.env.ONVIF_LEGACY_SYNC_MS || 10_000),
       5_000
     ),
-    reconnectMs: Math.max(
-      Number(process.env.ONVIF_LEGACY_RECONNECT_MS || 60_000),
-      5_000
-    ),
+    sessionTtlMs: Math.max(Number(process.env.ONVIF_LEGACY_SESSION_TTL_MS || 0), 0),
     ignoreInitialized: String(process.env.ONVIF_LEGACY_IGNORE_INITIALIZED || 'true').toLowerCase() !== 'false',
     initializedStateEvents: String(process.env.ONVIF_LEGACY_INITIALIZED_STATE_EVENTS || 'false').toLowerCase() === 'true',
     quietLogMs: Math.max(Number(process.env.ONVIF_LEGACY_QUIET_LOG_MS || 120_000), 30_000)
@@ -83,6 +82,17 @@ function credentials(camera: OnvifCamera) {
     username: String(camera.onvif_username || rtsp.username || ''),
     password: String(camera.onvif_password || rtsp.password || '')
   };
+}
+
+function sessionFingerprint(camera: OnvifCamera) {
+  const auth = credentials(camera);
+  return [
+    camera.stream_name,
+    hostFromXaddr(camera.onvif_xaddr),
+    Number(camera.onvif_port || 80),
+    auth.username,
+    crypto.createHash('sha256').update(auth.password || '').digest('hex').slice(0, 12)
+  ].join('|');
 }
 
 function findFirst(value: any, keys: string[]): any {
@@ -248,6 +258,7 @@ function stopSession(streamName: string) {
 function startSession(camera: OnvifCamera) {
   stopSession(camera.stream_name);
   const auth = credentials(camera);
+  const fingerprint = sessionFingerprint(camera);
   const options: any = {
     hostname: hostFromXaddr(camera.onvif_xaddr),
     port: Number(camera.onvif_port || 80),
@@ -307,7 +318,7 @@ function startSession(camera: OnvifCamera) {
     });
   });
 
-  sessions.set(camera.stream_name, { cam, startedAt: Date.now() });
+  sessions.set(camera.stream_name, { cam, startedAt: Date.now(), fingerprint });
   cam.on?.('error', (error: Error) => {
     console.warn('[onvif-events:legacy-fallback] session error', {
       stream_name: camera.stream_name,
@@ -338,7 +349,13 @@ async function sync() {
 
   for (const camera of cameras) {
     const session = sessions.get(camera.stream_name);
-    if (!session || Date.now() - session.startedAt >= config.reconnectMs) {
+    const fingerprint = sessionFingerprint(camera);
+    const sessionExpired = Boolean(
+      session &&
+      config.sessionTtlMs > 0 &&
+      Date.now() - session.startedAt >= config.sessionTtlMs
+    );
+    if (!session || session.fingerprint !== fingerprint || sessionExpired) {
       startSession(camera);
     }
   }
@@ -350,7 +367,7 @@ export function startOnvifLegacyFallbackCollector() {
   console.log('[onvif-events:legacy-fallback] enabled', {
     version: VERSION,
     streams: Array.from(config.streams),
-    reconnectMs: config.reconnectMs
+    sessionTtlMs: config.sessionTtlMs
   });
   void sync().catch((error) =>
     console.error('[onvif-events:legacy-fallback] sync failed', error)
