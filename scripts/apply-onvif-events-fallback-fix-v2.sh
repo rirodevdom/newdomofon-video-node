@@ -228,6 +228,23 @@ function setCsv(key, value) {
   source = source.replace(re, `${key}=${current.join(',')}`);
 }
 
+function removeCsv(key, value) {
+  const re = new RegExp(`^${escapeRegExp(key)}=(.*)$`, 'm');
+  const match = source.match(re);
+  if (!match) return;
+
+  const next = match[1]
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item && item !== value);
+
+  if (next.length) {
+    source = source.replace(re, `${key}=${next.join(',')}`);
+  } else {
+    source = source.replace(new RegExp(`^${escapeRegExp(key)}=.*\\n?`, 'm'), '');
+  }
+}
+
 function setValue(key, value) {
   const re = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
   if (re.test(source)) {
@@ -243,20 +260,21 @@ function deleteValue(key) {
 }
 
 setCsv('ONVIF_LEGACY_FALLBACK_STREAMS', stream);
-setCsv('ONVIF_V2_SKIP_STREAMS', stream);
+removeCsv('ONVIF_V2_SKIP_STREAMS', stream);
 setValue('ONVIF_LEGACY_IGNORE_INITIALIZED', 'true');
 setValue('ONVIF_LEGACY_INITIALIZED_STATE_EVENTS', 'true');
 setValue('ONVIF_LEGACY_SESSION_TTL_MS', process.env.ONVIF_LEGACY_SESSION_TTL_MS || '0');
 setValue('ONVIF_LEGACY_IDLE_RECONNECT_MS', process.env.ONVIF_LEGACY_IDLE_RECONNECT_MS || '120000');
 setValue('ONVIF_LEGACY_STATUS_LOG_MS', process.env.ONVIF_LEGACY_STATUS_LOG_MS || '60000');
 setValue('ONVIF_LEGACY_RAW_EVENT_LOG', process.env.ONVIF_LEGACY_RAW_EVENT_LOG || 'true');
+setValue('ONVIF_EVENT_POLL_INTERVAL_MS', process.env.ONVIF_EVENT_POLL_INTERVAL_MS || '2000');
 deleteValue('ONVIF_LEGACY_RECONNECT_MS');
 
 fs.writeFileSync(file, source);
 NODE
 
 echo "Updated event collector env:"
-grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_INITIALIZED_STATE_EVENTS|ONVIF_LEGACY_SESSION_TTL_MS|ONVIF_LEGACY_IDLE_RECONNECT_MS|ONVIF_LEGACY_STATUS_LOG_MS|ONVIF_LEGACY_RAW_EVENT_LOG|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
+grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_EVENT_POLL_INTERVAL_MS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_INITIALIZED_STATE_EVENTS|ONVIF_LEGACY_SESSION_TTL_MS|ONVIF_LEGACY_IDLE_RECONNECT_MS|ONVIF_LEGACY_STATUS_LOG_MS|ONVIF_LEGACY_RAW_EVENT_LOG|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
 echo "Installing DVR build dependencies with dev packages..."
@@ -287,7 +305,7 @@ systemctl status newdomofon-video-dvr.service --no-pager -l | sed -n '1,40p' || 
 
 echo
 journalctl -u newdomofon-video-dvr -n 180 --no-pager -l \
-  | grep -E "onvif-events:(v2|legacy-fallback)|$TARGET_STREAM|CreatePullPoint|poll failed|stored event|ignored initialized|raw event|status|idle session" || true
+  | grep -E "onvif-events:(v2|legacy-fallback)|$TARGET_STREAM|CreatePullPoint|poll failed|stored event|ignored initialized" || true
 
 echo
 echo "ONVIF events fallback fix v2 applied. Backup: $BACKUP_DIR"
