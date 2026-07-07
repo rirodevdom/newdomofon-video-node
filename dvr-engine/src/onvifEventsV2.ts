@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
 import { config as dvrConfig } from './config.js';
 
-const VERSION = 'v142-auto-node-onvif-events-concurrency';
+const VERSION = 'v143-pullpoint-compat';
 
 interface OnvifCamera {
   id: string;
@@ -164,7 +164,7 @@ async function soapRequest(url: string, action: string, body: string, username?:
 
     const text = await response.text();
     if (!response.ok) {
-      throw new Error(`SOAP ${action} HTTP ${response.status}: ${text.slice(0, 300)}`);
+      throw new Error(`SOAP ${action} HTTP ${response.status}: ${text.slice(0, 1200)}`);
     }
 
     return {
@@ -255,17 +255,68 @@ async function getEventServiceXaddr(camera: OnvifCamera, username: string, passw
   return findEventXaddr(result.json) || camera.onvif_xaddr;
 }
 
-async function createPullPoint(eventXaddr: string, username: string, password: string) {
-  const result = await soapRequest(
-    eventXaddr,
-    'http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest',
-    '<tev:CreatePullPointSubscription><tev:InitialTerminationTime>PT1H</tev:InitialTerminationTime></tev:CreatePullPointSubscription>',
-    username,
-    password
-  );
+function eventServiceCandidates(camera: OnvifCamera, eventXaddr: string) {
+  const candidates = [eventXaddr, camera.onvif_xaddr];
 
-  const address = firstString(result.json, ['Address']);
-  return address || eventXaddr;
+  try {
+    const url = new URL(camera.onvif_xaddr);
+    const base = `${url.protocol}//${url.host}`;
+    candidates.push(
+      `${base}/onvif/event_service`,
+      `${base}/onvif/EventService`,
+      `${base}/onvif/events_service`,
+      `${base}/onvif/device_service`
+    );
+  } catch {
+    // Keep the candidates found from ONVIF services.
+  }
+
+  return Array.from(new Set(candidates.filter(Boolean)));
+}
+
+async function createPullPoint(camera: OnvifCamera, eventXaddrs: string[], username: string, password: string) {
+  const variants = [
+    {
+      name: 'with-ttl',
+      action: 'http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest',
+      body: '<tev:CreatePullPointSubscription><tev:InitialTerminationTime>PT1H</tev:InitialTerminationTime></tev:CreatePullPointSubscription>'
+    },
+    {
+      name: 'without-ttl',
+      action: 'http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest',
+      body: '<tev:CreatePullPointSubscription/>'
+    },
+    {
+      name: 'bare-action',
+      action: 'http://www.onvif.org/ver10/events/wsdl/CreatePullPointSubscription',
+      body: '<tev:CreatePullPointSubscription/>'
+    }
+  ];
+
+  let lastError: unknown = null;
+
+  for (const eventXaddr of eventXaddrs) {
+    for (const variant of variants) {
+      try {
+        const result = await soapRequest(eventXaddr, variant.action, variant.body, username, password);
+        const address = firstString(result.json, ['Address']);
+        return {
+          pullPoint: address || eventXaddr,
+          eventXaddr,
+          variant: variant.name
+        };
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[onvif-events:v2] ${camera.stream_name} createPullPoint variant failed: ${message.slice(0, 500)}`, {
+          eventXaddr,
+          variant: variant.name
+        });
+      }
+    }
+  }
+
+  throw lastError || new Error('CreatePullPointSubscription failed');
 }
 
 async function pullMessages(pullPoint: string, username: string, password: string) {
@@ -409,7 +460,7 @@ function markFailure(camera: OnvifCamera, session: CameraSession, error: unknown
   session.pullPointCreatedAt = undefined;
 
   const message = error instanceof Error ? error.message : String(error);
-  console.warn('[onvif-events:v2]', camera.stream_name, 'poll failed', {
+  console.warn(`[onvif-events:v2] ${camera.stream_name} poll failed: ${message}`, {
     error: message,
     consecutiveFailures: session.consecutiveFailures,
     retryInMs: Math.max(0, session.failedUntil - now)
@@ -466,11 +517,15 @@ async function pollCamera(camera: OnvifCamera) {
       !session.pullPointCreatedAt ||
       now - session.pullPointCreatedAt > config.subscribeTtlMs
     ) {
-      session.pullPoint = await createPullPoint(session.eventXaddr, creds.username, creds.password);
+      const created = await createPullPoint(camera, eventServiceCandidates(camera, session.eventXaddr), creds.username, creds.password);
+      session.eventXaddr = created.eventXaddr;
+      session.pullPoint = created.pullPoint;
       session.pullPointCreatedAt = Date.now();
       console.log('[onvif-events:v2] pullpoint created', {
         stream_name: camera.stream_name,
         pullPoint: session.pullPoint,
+        eventXaddr: session.eventXaddr,
+        variant: created.variant,
         ttlMs: config.subscribeTtlMs
       });
     }
