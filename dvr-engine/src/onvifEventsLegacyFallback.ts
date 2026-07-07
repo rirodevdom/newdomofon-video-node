@@ -22,6 +22,7 @@ interface LegacySession {
 
 const sessions = new Map<string, LegacySession>();
 let timer: NodeJS.Timeout | null = null;
+let lastIgnoredSnapshotLogAt = 0;
 
 function cfg() {
   return {
@@ -45,7 +46,9 @@ function cfg() {
     reconnectMs: Math.max(
       Number(process.env.ONVIF_LEGACY_RECONNECT_MS || 60_000),
       20_000
-    )
+    ),
+    ignoreInitialized: String(process.env.ONVIF_LEGACY_IGNORE_INITIALIZED || 'true').toLowerCase() !== 'false',
+    quietLogMs: Math.max(Number(process.env.ONVIF_LEGACY_QUIET_LOG_MS || 120_000), 30_000)
   };
 }
 
@@ -150,6 +153,27 @@ function normalize(camera: OnvifCamera, event: any) {
   };
 }
 
+function shouldIgnoreSnapshot(payload: any) {
+  const config = cfg();
+  if (!config.ignoreInitialized) return false;
+
+  const operation = String(payload?.data?.operation ?? '').trim().toLowerCase();
+  return operation === 'initialized';
+}
+
+function logIgnoredSnapshot(payload: any) {
+  const config = cfg();
+  const now = Date.now();
+  if (now - lastIgnoredSnapshotLogAt < config.quietLogMs) return;
+  lastIgnoredSnapshotLogAt = now;
+  console.log('[onvif-events:legacy-fallback] ignored initialized snapshot', {
+    stream_name: payload.stream_name,
+    event_type: payload.event_type,
+    event_state: payload.event_state,
+    occurred_at: payload.occurred_at
+  });
+}
+
 async function backendGet(path: string) {
   const config = cfg();
   const response = await fetch(`${config.backendUrl}${path}`, {
@@ -228,10 +252,15 @@ function startSession(camera: OnvifCamera) {
     this.on('event', async (event: any) => {
       try {
         const payload = normalize(camera, event);
+        if (shouldIgnoreSnapshot(payload)) {
+          logIgnoredSnapshot(payload);
+          return;
+        }
         await postEvent(payload);
         console.log('[onvif-events:legacy-fallback] stored event', {
           stream_name: camera.stream_name,
           event_type: payload.event_type,
+          event_state: payload.event_state,
           occurred_at: payload.occurred_at
         });
       } catch (eventError) {
