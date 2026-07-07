@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
-TARGET_STREAM="${TARGET_STREAM:-${TEST_STREAM:-onvif2}}"
+TARGET_STREAM="${TARGET_STREAM:-${TEST_STREAM:-}}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/rirodevdom/newdomofon-video/main}"
 DVR_FILE="$PROJECT_DIR/dvr-engine/src/onvifEventsV2.ts"
 LEGACY_FILE="$PROJECT_DIR/dvr-engine/src/onvifEventsLegacyFallback.ts"
@@ -13,11 +13,6 @@ BACKUP_DIR="$PROJECT_DIR/backups/onvif-events-fallback-fix-v2-$STAMP"
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root: sudo bash scripts/apply-onvif-events-fallback-fix-v2.sh" >&2
   exit 1
-fi
-
-if [[ -z "$TARGET_STREAM" ]]; then
-  echo "TARGET_STREAM is empty" >&2
-  exit 2
 fi
 
 if [[ ! -f "$DVR_FILE" ]]; then
@@ -259,22 +254,29 @@ function deleteValue(key) {
   source = source.replace(re, '');
 }
 
-setCsv('ONVIF_LEGACY_FALLBACK_STREAMS', stream);
-removeCsv('ONVIF_V2_SKIP_STREAMS', stream);
-setValue('ONVIF_LEGACY_IGNORE_INITIALIZED', 'true');
-setValue('ONVIF_LEGACY_INITIALIZED_STATE_EVENTS', 'true');
-setValue('ONVIF_LEGACY_SESSION_TTL_MS', process.env.ONVIF_LEGACY_SESSION_TTL_MS || '0');
-setValue('ONVIF_LEGACY_IDLE_RECONNECT_MS', process.env.ONVIF_LEGACY_IDLE_RECONNECT_MS || '120000');
-setValue('ONVIF_LEGACY_STATUS_LOG_MS', process.env.ONVIF_LEGACY_STATUS_LOG_MS || '60000');
-setValue('ONVIF_LEGACY_RAW_EVENT_LOG', process.env.ONVIF_LEGACY_RAW_EVENT_LOG || 'true');
+if (stream) {
+  setCsv('ONVIF_LEGACY_FALLBACK_STREAMS', stream);
+  removeCsv('ONVIF_V2_SKIP_STREAMS', stream);
+  setValue('ONVIF_LEGACY_IGNORE_INITIALIZED', 'true');
+  setValue('ONVIF_LEGACY_INITIALIZED_STATE_EVENTS', 'true');
+  setValue('ONVIF_LEGACY_SESSION_TTL_MS', process.env.ONVIF_LEGACY_SESSION_TTL_MS || '0');
+  setValue('ONVIF_LEGACY_IDLE_RECONNECT_MS', process.env.ONVIF_LEGACY_IDLE_RECONNECT_MS || '120000');
+  setValue('ONVIF_LEGACY_STATUS_LOG_MS', process.env.ONVIF_LEGACY_STATUS_LOG_MS || '60000');
+  setValue('ONVIF_LEGACY_RAW_EVENT_LOG', process.env.ONVIF_LEGACY_RAW_EVENT_LOG || 'true');
+} else {
+  deleteValue('ONVIF_V2_SKIP_STREAMS');
+  deleteValue('ONVIF_EVENTS_V2_SKIP_STREAMS');
+}
 setValue('ONVIF_EVENT_POLL_INTERVAL_MS', process.env.ONVIF_EVENT_POLL_INTERVAL_MS || '2000');
+setValue('ONVIF_EVENT_CONCURRENCY', process.env.ONVIF_EVENT_CONCURRENCY || '8');
+setValue('ONVIF_SYNC_LOG_MS', process.env.ONVIF_SYNC_LOG_MS || '60000');
 deleteValue('ONVIF_LEGACY_RECONNECT_MS');
 
 fs.writeFileSync(file, source);
 NODE
 
 echo "Updated event collector env:"
-grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_EVENT_POLL_INTERVAL_MS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_INITIALIZED_STATE_EVENTS|ONVIF_LEGACY_SESSION_TTL_MS|ONVIF_LEGACY_IDLE_RECONNECT_MS|ONVIF_LEGACY_STATUS_LOG_MS|ONVIF_LEGACY_RAW_EVENT_LOG|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
+grep -E '^(ONVIF_EVENT_POLL_INTERVAL_MS|ONVIF_EVENT_CONCURRENCY|ONVIF_SYNC_LOG_MS|ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_EVENTS_V2_SKIP_STREAMS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_INITIALIZED_STATE_EVENTS|ONVIF_LEGACY_SESSION_TTL_MS|ONVIF_LEGACY_IDLE_RECONNECT_MS|ONVIF_LEGACY_STATUS_LOG_MS|ONVIF_LEGACY_RAW_EVENT_LOG|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
 echo "Installing DVR build dependencies with dev packages..."
@@ -305,7 +307,7 @@ systemctl status newdomofon-video-dvr.service --no-pager -l | sed -n '1,40p' || 
 
 echo
 journalctl -u newdomofon-video-dvr -n 180 --no-pager -l \
-  | grep -E "onvif-events:(v2|legacy-fallback)|$TARGET_STREAM|CreatePullPoint|poll failed|stored event|ignored initialized" || true
+  | grep -E "onvif-events:(v2|legacy-fallback)|${TARGET_STREAM:-ONVIF_EVENT_CONCURRENCY}|CreatePullPoint|poll failed|stored event|ignored initialized" || true
 
 echo
 echo "ONVIF events fallback fix v2 applied. Backup: $BACKUP_DIR"
