@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
 import { config as dvrConfig } from './config.js';
 
-const VERSION = 'v138-camera-restart-events-recovery';
+const VERSION = 'v142-auto-node-onvif-events-concurrency';
 
 interface OnvifCamera {
   id: string;
@@ -42,6 +42,7 @@ const sessions = new Map<string, CameraSession>();
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 let lastSkipLogAt = 0;
+let lastSyncLogAt = 0;
 
 function cfg() {
   return {
@@ -55,6 +56,8 @@ function cfg() {
     failRetryMinMs: Math.max(Number(process.env.ONVIF_FAIL_RETRY_MIN_MS || 10_000), 2000),
     failRetryMaxMs: Math.max(Number(process.env.ONVIF_FAIL_RETRY_MAX_MS || 60_000), 10_000),
     quietLogMs: Math.max(Number(process.env.ONVIF_QUIET_LOG_MS || 120_000), 30_000),
+    syncLogMs: Math.max(Number(process.env.ONVIF_SYNC_LOG_MS || process.env.ONVIF_QUIET_LOG_MS || 120_000), 15_000),
+    concurrency: Math.max(Number(process.env.ONVIF_EVENT_CONCURRENCY || 8), 1),
     skipStreams: new Set(
       String(process.env.ONVIF_V2_SKIP_STREAMS || process.env.ONVIF_EVENTS_V2_SKIP_STREAMS || '')
         .split(',')
@@ -509,6 +512,25 @@ async function fetchCameras(): Promise<OnvifCamera[]> {
   return Array.isArray(data.items) ? data.items as OnvifCamera[] : [];
 }
 
+async function runLimited<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(limit, 1), items.length);
+  const failures: unknown[] = [];
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      try {
+        await worker(item);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  }));
+
+  return failures;
+}
+
 async function tick() {
   if (running) return;
   running = true;
@@ -543,14 +565,22 @@ async function tick() {
       }
     }
 
-    await Promise.allSettled(cameras.map((camera) => pollCamera(camera)));
+    const failures = await runLimited(cameras, config.concurrency, pollCamera);
 
-    console.log('[onvif-events:v2] sync', {
-      version: VERSION,
-      cameras: cameras.length,
-      sessions: sessions.size,
-      ok: Array.from(sessions.values()).filter((s) => s.lastOkAt && (!s.failedUntil || s.failedUntil < Date.now())).length
-    });
+    if (Date.now() - lastSyncLogAt > config.syncLogMs || failures.length) {
+      lastSyncLogAt = Date.now();
+      console.log('[onvif-events:v2] sync', {
+        version: VERSION,
+        nodeId: dvrConfig.nodeId,
+        allCameras: allCameras.length,
+        cameras: cameras.length,
+        skipped: skippedCameras.length,
+        sessions: sessions.size,
+        ok: Array.from(sessions.values()).filter((s) => s.lastOkAt && (!s.failedUntil || s.failedUntil < Date.now())).length,
+        concurrency: config.concurrency,
+        failures: failures.length
+      });
+    }
   } catch (error) {
     console.error('[onvif-events:v2] sync failed', error instanceof Error ? error.message : error);
   } finally {
@@ -579,6 +609,7 @@ export function startOnvifEventCollectorV2() {
     pullTimeout: config.pullTimeout,
     pullLimit: config.pullLimit,
     subscribeTtlMs: config.subscribeTtlMs,
+    concurrency: config.concurrency,
     skipStreams: Array.from(config.skipStreams)
   });
 
