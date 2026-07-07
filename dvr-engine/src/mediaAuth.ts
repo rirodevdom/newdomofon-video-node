@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { getNodeMediaSecret, isNodeMode } from './nodeClient.js';
 
 
-function allowPermanentNoExpMediaToken(payload) {
+function allowPermanentNoExpMediaToken(payload: any) {
   if (!['1', 'true', 'yes', 'on'].includes(String(process.env.ACCEPT_PERMANENT_NO_EXP_MEDIA_TOKEN || '').toLowerCase())) return false;
   if (!['1', 'true', 'yes', 'on'].includes(String(process.env.PERMANENT_MEDIA_LINKS || '').toLowerCase())) return false;
   if (!payload || typeof payload !== 'object') return false;
