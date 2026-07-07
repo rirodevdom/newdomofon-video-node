@@ -264,6 +264,7 @@ if (stream) {
   setValue('ONVIF_LEGACY_STATUS_LOG_MS', process.env.ONVIF_LEGACY_STATUS_LOG_MS || '60000');
   setValue('ONVIF_LEGACY_RAW_EVENT_LOG', process.env.ONVIF_LEGACY_RAW_EVENT_LOG || 'true');
 } else {
+  deleteValue('ONVIF_LEGACY_FALLBACK_STREAMS');
   deleteValue('ONVIF_V2_SKIP_STREAMS');
   deleteValue('ONVIF_EVENTS_V2_SKIP_STREAMS');
 }
