@@ -45,6 +45,12 @@ if [[ -d "$PROJECT_DIR/public-events-proxy" ]]; then
   fi
 fi
 
+install -d -o newdomofon -g newdomofon -m 0755 \
+  /var/lib/newdomofon-video \
+  /var/cache/newdomofon-video \
+  /var/cache/newdomofon-video/smartyard-preview \
+  /var/log/newdomofon-video
+
 cp "$PROJECT_DIR/deploy/systemd/newdomofon-video-backend.service" /etc/systemd/system/
 cp "$PROJECT_DIR/deploy/systemd/newdomofon-public-events-proxy.service" /etc/systemd/system/
 if [[ -f "$PROJECT_DIR/deploy/systemd/newdomofon-smartyard-compat.service" ]]; then
