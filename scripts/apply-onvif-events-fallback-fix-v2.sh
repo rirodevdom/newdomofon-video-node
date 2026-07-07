@@ -144,13 +144,14 @@ function setValue(key, value) {
 setCsv('ONVIF_LEGACY_FALLBACK_STREAMS', stream);
 setCsv('ONVIF_V2_SKIP_STREAMS', stream);
 setValue('ONVIF_LEGACY_IGNORE_INITIALIZED', 'true');
-setValue('ONVIF_LEGACY_RECONNECT_MS', process.env.ONVIF_LEGACY_RECONNECT_MS || '60000');
+setValue('ONVIF_LEGACY_INITIALIZED_STATE_EVENTS', 'true');
+setValue('ONVIF_LEGACY_RECONNECT_MS', process.env.ONVIF_LEGACY_RECONNECT_MS || '5000');
 
 fs.writeFileSync(file, source);
 NODE
 
 echo "Updated event collector env:"
-grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
+grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_INITIALIZED_STATE_EVENTS|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
 echo "Installing DVR build dependencies with dev packages..."
