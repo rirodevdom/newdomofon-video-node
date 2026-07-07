@@ -122,14 +122,24 @@ function setCsv(key, value) {
   source = source.replace(re, `${key}=${current.join(',')}`);
 }
 
+function setValue(key, value) {
+  const re = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
+  if (re.test(source)) {
+    source = source.replace(re, `${key}=${value}`);
+    return;
+  }
+  source = `${source.replace(/\s*$/, '')}\n${key}=${value}\n`;
+}
+
 setCsv('ONVIF_LEGACY_FALLBACK_STREAMS', stream);
 setCsv('ONVIF_V2_SKIP_STREAMS', stream);
+setValue('ONVIF_LEGACY_RECONNECT_MS', '86400000');
 
 fs.writeFileSync(file, source);
 NODE
 
 echo "Updated event collector env:"
-grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS)=' "$ENV_FILE" || true
+grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
 echo "Installing DVR build dependencies with dev packages..."
