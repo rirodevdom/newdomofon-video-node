@@ -36,12 +36,29 @@ npm run build
 rsync -a --delete dist/ /var/www/newdomofon-video/
 chown -R newdomofon:newdomofon /var/www/newdomofon-video
 
+if [[ -d "$PROJECT_DIR/public-events-proxy" ]]; then
+  cd "$PROJECT_DIR/public-events-proxy"
+  if [[ -f package-lock.json ]]; then
+    npm ci --omit=dev
+  else
+    npm install --omit=dev
+  fi
+fi
+
 cp "$PROJECT_DIR/deploy/systemd/newdomofon-video-backend.service" /etc/systemd/system/
+cp "$PROJECT_DIR/deploy/systemd/newdomofon-public-events-proxy.service" /etc/systemd/system/
+if [[ -f "$PROJECT_DIR/deploy/systemd/newdomofon-smartyard-compat.service" ]]; then
+  cp "$PROJECT_DIR/deploy/systemd/newdomofon-smartyard-compat.service" /etc/systemd/system/
+fi
 cp "$PROJECT_DIR/deploy/nginx/newdomofon-video.conf" /etc/nginx/sites-available/newdomofon-video.conf
 ln -sf /etc/nginx/sites-available/newdomofon-video.conf /etc/nginx/sites-enabled/newdomofon-video.conf
 
 systemctl daemon-reload
 systemctl enable --now newdomofon-video-backend
+systemctl enable --now newdomofon-public-events-proxy
+if [[ -f /etc/systemd/system/newdomofon-smartyard-compat.service ]]; then
+  systemctl enable --now newdomofon-smartyard-compat
+fi
 nginx -t
 systemctl reload nginx
 
