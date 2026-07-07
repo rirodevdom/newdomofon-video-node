@@ -21,6 +21,7 @@ interface LegacySession {
 }
 
 const sessions = new Map<string, LegacySession>();
+const snapshotStates = new Map<string, string>();
 let timer: NodeJS.Timeout | null = null;
 let lastIgnoredSnapshotLogAt = 0;
 
@@ -45,9 +46,10 @@ function cfg() {
     ),
     reconnectMs: Math.max(
       Number(process.env.ONVIF_LEGACY_RECONNECT_MS || 60_000),
-      20_000
+      5_000
     ),
     ignoreInitialized: String(process.env.ONVIF_LEGACY_IGNORE_INITIALIZED || 'true').toLowerCase() !== 'false',
+    initializedStateEvents: String(process.env.ONVIF_LEGACY_INITIALIZED_STATE_EVENTS || 'false').toLowerCase() === 'true',
     quietLogMs: Math.max(Number(process.env.ONVIF_LEGACY_QUIET_LOG_MS || 120_000), 30_000)
   };
 }
@@ -161,6 +163,33 @@ function shouldIgnoreSnapshot(payload: any) {
   return operation === 'initialized';
 }
 
+function initializedSnapshotStateChange(payload: any) {
+  const config = cfg();
+  const operation = String(payload?.data?.operation ?? '').trim().toLowerCase();
+  if (!config.initializedStateEvents || operation !== 'initialized') return null;
+
+  const state = payload.event_state === undefined || payload.event_state === null
+    ? ''
+    : String(payload.event_state);
+  const key = `${payload.stream_name}|${payload.event_type}`;
+  const previous = snapshotStates.get(key);
+  snapshotStates.set(key, state);
+
+  if (previous === undefined || previous === state) return null;
+
+  return {
+    ...payload,
+    occurred_at: new Date().toISOString(),
+    data: {
+      ...(payload.data || {}),
+      operation: 'Changed',
+      _newdomofon_initialized_state_change: true,
+      _newdomofon_previous_state: previous,
+      _newdomofon_current_state: state
+    }
+  };
+}
+
 function logIgnoredSnapshot(payload: any) {
   const config = cfg();
   const now = Date.now();
@@ -251,7 +280,11 @@ function startSession(camera: OnvifCamera) {
 
     this.on('event', async (event: any) => {
       try {
-        const payload = normalize(camera, event);
+        let payload = normalize(camera, event);
+        const stateChangePayload = initializedSnapshotStateChange(payload);
+        if (stateChangePayload) {
+          payload = stateChangePayload;
+        }
         if (shouldIgnoreSnapshot(payload)) {
           logIgnoredSnapshot(payload);
           return;
