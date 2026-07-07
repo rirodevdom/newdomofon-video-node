@@ -76,6 +76,7 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/var/log/newdomofon-video /tmp
+LogsDirectory=newdomofon-video
 CapabilityBoundingSet=
 AmbientCapabilities=
 LimitNOFILE=65535
@@ -111,6 +112,9 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/var/lib/newdomofon-video /var/cache/newdomofon-video /var/log/newdomofon-video /tmp
+StateDirectory=newdomofon-video
+CacheDirectory=newdomofon-video
+LogsDirectory=newdomofon-video
 CapabilityBoundingSet=
 AmbientCapabilities=
 LimitNOFILE=1048576
@@ -223,6 +227,20 @@ NGINX
   rm -f "$public_block" "$smartyard_block"
 }
 
+wait_for_http() {
+  local name="$1"
+  local url="$2"
+  local deadline=$((SECONDS + 15))
+
+  until curl -fsS -m 2 "$url" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      echo "WARN: $name is not ready yet: $url" >&2
+      return 1
+    fi
+    sleep 0.5
+  done
+}
+
 smoke() {
   local name="$1"
   local url="$2"
@@ -257,6 +275,11 @@ systemctl restart newdomofon-smartyard-compat.service
 
 nginx -t
 systemctl reload nginx
+
+wait_for_http "backend" "http://127.0.0.1:3000/api/health" || true
+wait_for_http "dvr-engine" "http://127.0.0.1:3010/health" || true
+wait_for_http "public-events-proxy" "http://127.0.0.1:3057/health" || true
+wait_for_http "smartyard-compat" "http://127.0.0.1:3082/health" || true
 
 smoke "backend" "http://127.0.0.1:3000/api/health"
 smoke "dvr-engine" "http://127.0.0.1:3010/health"
