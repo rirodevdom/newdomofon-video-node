@@ -1,0 +1,31 @@
+[Unit]
+Description=NewDomofon Video DVR Engine
+Documentation=file:/opt/newdomofon-video/docs/BAREMETAL_DEBIAN12.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=newdomofon
+Group=newdomofon
+WorkingDirectory=/opt/newdomofon-video/dvr-engine
+EnvironmentFile=/etc/newdomofon-video/app.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/newdomofon-video/dvr-engine/dist/index.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+SyslogIdentifier=newdomofon-dvr
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/newdomofon-video /var/log/newdomofon-video /tmp
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

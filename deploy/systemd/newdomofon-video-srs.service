@@ -1,0 +1,22 @@
+[Unit]
+Description=NewDomofon Video optional SRS media server
+Documentation=https://ossrs.net/lts/en-us/docs/v7/doc/getting-started-build
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/srs/trunk/objs/srs
+
+[Service]
+Type=simple
+User=newdomofon
+Group=newdomofon
+EnvironmentFile=-/etc/newdomofon-video/app.env
+WorkingDirectory=/opt/srs/trunk
+ExecStart=/opt/srs/trunk/objs/srs -c /etc/newdomofon-video/srs.conf
+Restart=always
+RestartSec=5
+SyslogIdentifier=newdomofon-srs
+NoNewPrivileges=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

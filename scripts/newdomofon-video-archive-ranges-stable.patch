@@ -1,0 +1,333 @@
+--- a/dvr-archive-proxy/server.js
++++ b/dvr-archive-proxy/server.js
+@@ -140,7 +140,9 @@
+     'access-control-allow-origin': '*',
+     'access-control-allow-methods': 'GET,HEAD,OPTIONS',
+     'access-control-allow-headers': '*',
+-    'access-control-expose-headers': 'Content-Length,Content-Range,Accept-Ranges,X-Newdomofon-Resolved-Stream',
++    'access-control-expose-headers': 'Content-Length,Content-Range,Accept-Ranges,X-Newdomofon-Resolved-Stream,X-Newdomofon-Archive-Ranges,X-Newdomofon-Archive-Coverage',
++    'cross-origin-resource-policy': 'cross-origin',
++    'x-content-type-options': 'nosniff',
+     ...extra
+   };
+ }
+@@ -454,6 +456,175 @@
+   return String(s || 'archive').replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 120) || 'archive';
+ }
+ 
++function archiveRangePayload(range) {
++  const from = Math.floor(range.start / 1000);
++  const to = Math.ceil(range.end / 1000);
++  const duration = Math.max(1, to - from);
++
++  return {
++    from,
++    to,
++    duration,
++    start: from,
++    end: to,
++    startMs: range.start,
++    endMs: range.end,
++    from_iso: iso(range.start),
++    to_iso: iso(range.end),
++    start_iso: iso(range.start),
++    end_iso: iso(range.end)
++  };
++}
++
++function gapPayload(gap) {
++  const from = Math.floor(gap.start / 1000);
++  const to = Math.ceil(gap.end / 1000);
++  return {
++    from,
++    to,
++    duration: Math.max(1, to - from),
++    start: from,
++    end: to,
++    startMs: gap.start,
++    endMs: gap.end,
++    from_iso: iso(gap.start),
++    to_iso: iso(gap.end),
++    start_iso: iso(gap.start),
++    end_iso: iso(gap.end)
++  };
++}
++
++function archiveMetadataPayload(stream, segments, ranges, gaps, source) {
++  const first = segments[0] || null;
++  const last = segments[segments.length - 1] || null;
++  const stableRanges = ranges.map(archiveRangePayload);
++  const stableGaps = gaps.map(gapPayload);
++
++  return {
++    ok: true,
++    source,
++    stream,
++    stream_name: stream,
++    name: stream,
++    dvr: true,
++    recording: Boolean(last),
++    from: first ? Math.floor(first.ms / 1000) : null,
++    to: last ? Math.floor(last.ms / 1000) : null,
++    from_iso: first ? iso(first.ms) : null,
++    to_iso: last ? iso(last.ms) : null,
++    segments: segments.length,
++    ranges: stableRanges,
++    recordings: stableRanges,
++    items: stableRanges,
++    streams: [{ stream, name: stream, ranges: stableRanges }],
++    gaps: stableGaps
++  };
++}
++
++async function latestSegment(stream, targetMs = Date.now()) {
++  const segments = await scanSegments(stream, 0, Math.max(Date.now() + 60_000, targetMs + 60_000));
++  if (!segments.length) return null;
++  let best = segments[segments.length - 1];
++  let bestDistance = Math.abs(best.ms - targetMs);
++
++  for (const segment of segments) {
++    const distance = Math.abs(segment.ms - targetMs);
++    if (distance < bestDistance) {
++      best = segment;
++      bestDistance = distance;
++    }
++  }
++
++  return best;
++}
++
++async function runFfmpegPreview(inputFile, outputFile) {
++  await fsp.mkdir(path.dirname(outputFile), { recursive: true });
++  const tmp = `${outputFile}.${process.pid}.${Date.now()}.tmp.mp4`;
++  const args = [
++    '-hide_banner',
++    '-loglevel', 'error',
++    '-y',
++    '-i', inputFile,
++    '-t', '1',
++    '-an',
++    '-vf', 'scale=640:-2:force_original_aspect_ratio=decrease',
++    '-c:v', 'libx264',
++    '-preset', 'veryfast',
++    '-pix_fmt', 'yuv420p',
++    '-movflags', '+faststart',
++    '-f', 'mp4',
++    tmp
++  ];
++
++  await new Promise((resolve, reject) => {
++    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
++    let stderr = '';
++    const timeout = setTimeout(() => {
++      child.kill('SIGKILL');
++      reject(new Error('ffmpeg preview timeout'));
++    }, Number(process.env.PREVIEW_FFMPEG_TIMEOUT_MS || 8000));
++
++    child.stderr.on('data', (chunk) => {
++      stderr += chunk.toString();
++      if (stderr.length > 8000) stderr = stderr.slice(-8000);
++    });
++    child.on('error', (error) => { clearTimeout(timeout); reject(error); });
++    child.on('close', (code) => {
++      clearTimeout(timeout);
++      code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg preview exited with code ${code}`));
++    });
++  });
++
++  await fsp.rename(tmp, outputFile);
++}
++
++async function sendPreviewMp4(req, res, stream, mediaPath) {
++  const match = /^(\d+)-preview\.mp4$/i.exec(mediaPath || '');
++  const targetMs = match ? Number(match[1]) * 1000 : Date.now();
++  const cacheDir = process.env.PREVIEW_CACHE_DIR || '/var/cache/newdomofon-video/previews';
++  const cacheFile = path.join(cacheDir, `${safeName(stream)}-${match ? match[1] : 'latest'}.mp4`);
++
++  try {
++    const stat = await fsp.stat(cacheFile);
++    const maxAgeMs = Number(process.env.PREVIEW_CACHE_MAX_AGE_MS || 30_000);
++    if (stat.isFile() && stat.size > 0 && Date.now() - stat.mtimeMs <= maxAgeMs) {
++      sendFile(req, res, cacheFile, stat, stream, {
++        'content-type': 'video/mp4',
++        'content-disposition': 'inline; filename="preview.mp4"',
++        'x-newdomofon-preview-source': 'cache'
++      });
++      return;
++    }
++  } catch {
++    // generate below
++  }
++
++  const segment = await latestSegment(stream, targetMs);
++  if (!segment) {
++    sendNoContent(res);
++    return;
++  }
++
++  try {
++    await runFfmpegPreview(segment.filePath, cacheFile);
++    const stat = await fsp.stat(cacheFile);
++    sendFile(req, res, cacheFile, stat, stream, {
++      'content-type': 'video/mp4',
++      'content-disposition': 'inline; filename="preview.mp4"',
++      'x-newdomofon-preview-source': 'generated',
++      'x-newdomofon-preview-segment': segment.relative
++    });
++  } catch (error) {
++    console.warn('[dvr-archive-proxy] preview generation failed', {
++      stream,
++      mediaPath,
++      error: String(error && error.message || error)
++    });
++    sendNoContent(res);
++  }
++}
++
+ async function sendArchiveMp4(req, res, stream, mediaPath, window) {
+   const segments = await scanSegments(stream, window.startMs, window.endMs);
+ 
+@@ -588,40 +759,16 @@
+   const segments = await scanSegments(stream, 0, Number.MAX_SAFE_INTEGER);
+   const ranges = mergeSegmentsToRangesV93(segments);
+   const internalGaps = gapsFromRangesV93(ranges);
+-  const first = segments[0] || null;
+-  const last = segments[segments.length - 1] || null;
+ 
+-  sendJson(res, 200, {
+-    ok: true,
+-    stream,
+-    name: stream,
+-    dvr: true,
+-    recording: Boolean(last),
+-    from: first ? Math.floor(first.ms / 1000) : null,
+-    to: last ? Math.floor(last.ms / 1000) : null,
+-    from_iso: first ? iso(first.ms) : null,
+-    to_iso: last ? iso(last.ms) : null,
+-    segments: segments.length,
+-    ranges: ranges.map((r) => ({
+-      from: Math.floor(r.start / 1000),
+-      to: Math.ceil(r.end / 1000),
+-      from_iso: iso(r.start),
+-      to_iso: iso(r.end)
+-    })),
+-    gaps: internalGaps.map((g) => ({
+-      from: Math.floor(g.start / 1000),
+-      to: Math.ceil(g.end / 1000),
+-      from_iso: iso(g.start),
+-      to_iso: iso(g.end)
+-    })),
+-    source: 'archive-coverage-v93'
+-  }, { 'x-newdomofon-resolved-stream': stream, 'x-newdomofon-archive-coverage': 'v93' });
++  sendJson(res, 200, archiveMetadataPayload(stream, segments, ranges, internalGaps, 'archive-coverage-v135-player-kit-stable'), {
++    'x-newdomofon-resolved-stream': stream,
++    'x-newdomofon-archive-coverage': 'v135',
++    'x-newdomofon-archive-ranges': String(ranges.length)
++  });
+ }
+ 
+ async function recordingStatus(stream, res) {
+   const segments = await scanSegments(stream, 0, Number.MAX_SAFE_INTEGER);
+-  const first = segments[0];
+-  const last = segments[segments.length - 1];
+ 
+   const segmentSeconds = Number(process.env.SEGMENT_DURATION || process.env.DVR_SEGMENT_DURATION || 4);
+   const gapSeconds = Math.max(
+@@ -630,52 +777,29 @@
+   );
+   const gapMs = gapSeconds * 1000;
+ 
+-  const rangesRaw = [];
++  const ranges = [];
+   for (const segment of segments) {
+-    const segStart = segment.ms;
+-    const segEnd = segment.ms + Math.max(1, segmentSeconds) * 1000;
+-    const range = rangesRaw[rangesRaw.length - 1];
+-
+-    if (!range || segStart > range.endMs + gapMs) {
+-      rangesRaw.push({
+-        startMs: segStart,
+-        endMs: segEnd,
+-        segments: 1
+-      });
++    const start = segment.ms;
++    const end = segment.ms + Math.max(1, segmentSeconds) * 1000;
++    const previous = ranges[ranges.length - 1];
++
++    if (!previous || start > previous.end + gapMs) {
++      ranges.push({ start, end, segments: 1 });
+     } else {
+-      range.endMs = Math.max(range.endMs, segEnd);
+-      range.segments += 1;
++      previous.end = Math.max(previous.end, end);
++      previous.segments += 1;
+     }
+   }
+ 
+-  const ranges = rangesRaw.map((range) => ({
+-    from: Math.floor(range.startMs / 1000),
+-    duration: Math.max(1, Math.ceil((range.endMs - range.startMs) / 1000)),
+-    start: Math.floor(range.startMs / 1000),
+-    end: Math.floor(range.endMs / 1000),
+-    from_iso: iso(range.startMs),
+-    to_iso: iso(range.endMs),
+-    start_iso: iso(range.startMs),
+-    end_iso: iso(range.endMs),
+-    segments: range.segments
+-  }));
++  const gaps = gapsFromRangesV93(ranges);
++  const body = archiveMetadataPayload(stream, segments, ranges, gaps, 'recording-status-v135-player-kit-stable');
++  body.range_gap_seconds = gapSeconds;
++  body.version = 'v135-player-kit-stable-ranges';
+ 
+-  sendJson(res, 200, {
+-    stream,
+-    name: stream,
+-    dvr: true,
+-    recording: Boolean(last),
+-    from: first ? Math.floor(first.ms / 1000) : null,
+-    to: last ? Math.floor(last.ms / 1000) : null,
+-    from_iso: first ? iso(first.ms) : null,
+-    to_iso: last ? iso(last.ms) : null,
+-    segments: segments.length,
+-    ranges,
+-    recordings: ranges,
+-    items: ranges,
+-    range_gap_seconds: gapSeconds,
+-    version: 'v127-archive-status-ranges-repair'
+-  }, { 'x-newdomofon-resolved-stream': stream });
++  sendJson(res, 200, body, {
++    'x-newdomofon-resolved-stream': stream,
++    'x-newdomofon-archive-ranges': String(ranges.length)
++  });
+ }
+ 
+ async function handle(req, res) {
+@@ -691,7 +815,7 @@
+       sendJson(res, 200, {
+         ok: true,
+         service: 'newdomofon-dvr-archive-proxy',
+-        version: 'v46-safe-archive-only',
++        version: 'v135-player-kit-stable',
+         dvr_roots: DVR_ROOTS,
+         camera_map: CAMERA_STREAM_MAP,
+         aliases: aliasMap(),
+@@ -741,8 +865,8 @@
+       return;
+     }
+ 
+-    if (mediaPath === 'preview.mp4') {
+-      sendNoContent(res);
++    if (mediaPath === 'preview.mp4' || /^\d+-preview\.mp4$/i.test(mediaPath)) {
++      await sendPreviewMp4(req, res, stream, mediaPath);
+       return;
+     }
+ 
+@@ -830,6 +954,6 @@
+     roots: DVR_ROOTS,
+     camera_map: CAMERA_STREAM_MAP,
+     aliases_file: STREAM_ALIASES_FILE,
+-    version: 'v46-safe-archive-only'
++    version: 'v135-player-kit-stable'
+   });
+ });
