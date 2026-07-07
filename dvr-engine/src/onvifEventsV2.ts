@@ -313,7 +313,7 @@ function topicLeaf(topic: string) {
 }
 
 function eventState(items: Record<string, string>) {
-  const keys = ['State', 'IsMotion', 'LogicalState', 'Active', 'Motion', 'Value', 'ObjectId'];
+  const keys = ['State', 'IsMotion', 'LogicalState', 'Active', 'Motion', 'Value'];
   for (const key of keys) {
     if (items[key] !== undefined) return String(items[key]);
   }
@@ -340,20 +340,22 @@ function mapEvents(camera: OnvifCamera, xml: any) {
     const topic = topicFromNotification(notification);
     const items = collectSimpleItems(notification);
     const key = stateKey(items);
-    const type = key ? `${topic}/${key}` : topic;
+    const state = eventState(items);
+    const source = sourceName(items);
 
     return {
       camera_id: camera.id,
       stream_name: camera.stream_name,
-      event_type: type || topicLeaf(topic),
-      event_state: eventState(items),
+      event_type: topic || topicLeaf(topic),
+      event_state: state,
       topic,
-      source_name: sourceName(items),
+      source_name: source,
       occurred_at: occurredAt(notification),
       data: {
         simple: items,
         simpleItems: items,
-        source_name: sourceName(items),
+        state_key: key,
+        source_name: source,
         raw: notification
       }
     };
