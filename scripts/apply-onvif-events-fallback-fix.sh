@@ -132,8 +132,8 @@ echo "Updated event collector env:"
 grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
-if [[ ! -d node_modules ]]; then
-  npm ci
+if [[ ! -x node_modules/.bin/tsc ]]; then
+  npm ci --include=dev
 fi
 npm run build
 popd >/dev/null
