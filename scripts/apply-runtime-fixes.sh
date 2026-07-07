@@ -40,6 +40,14 @@ install_node_deps() {
   popd >/dev/null
 }
 
+prepare_runtime_dirs() {
+  install -d -o newdomofon -g newdomofon -m 0755 \
+    /var/lib/newdomofon-video \
+    /var/cache/newdomofon-video \
+    /var/cache/newdomofon-video/smartyard-preview \
+    /var/log/newdomofon-video
+}
+
 write_service_units() {
   cat >/etc/systemd/system/newdomofon-public-events-proxy.service <<'UNIT'
 [Unit]
@@ -236,6 +244,7 @@ node --check "$PROJECT_DIR/public-events-proxy/server.js"
 node --check "$PROJECT_DIR/smartyard-compat-proxy/server.js"
 
 install_node_deps "$PROJECT_DIR/public-events-proxy"
+prepare_runtime_dirs
 
 write_service_units
 patch_nginx_site
