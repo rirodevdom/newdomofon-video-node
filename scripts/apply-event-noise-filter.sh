@@ -37,11 +37,13 @@ smoke() {
 
 need_file "$PROJECT_DIR/backend/package.json"
 need_file "$PROJECT_DIR/backend/src/routes/internalOnvifEvents.ts"
+need_file "$PROJECT_DIR/backend/src/routes/tokens.ts"
 need_file "$PROJECT_DIR/public-events-proxy/server.js"
 need_file "$ENV_FILE"
 
 install -d -m 0750 "$BACKUP_DIR"
 cp -a "$PROJECT_DIR/backend/src/routes/internalOnvifEvents.ts" "$BACKUP_DIR/internalOnvifEvents.ts.bak"
+cp -a "$PROJECT_DIR/backend/src/routes/tokens.ts" "$BACKUP_DIR/tokens.ts.bak"
 cp -a "$PROJECT_DIR/public-events-proxy/server.js" "$BACKUP_DIR/public-events-server.js.bak"
 
 append_env_default PUBLIC_EVENTS_INCLUDE_PASSIVE false
@@ -135,6 +137,21 @@ if (!source.includes('ONVIF_EVENT_SUPPRESS_REPEATED_STATE')) {
     "  if (eventState !== null && envFlag('ONVIF_EVENT_SUPPRESS_REPEATED_STATE', true)) {\n    const previous = await query<{ event_state: string | null; occurred_at: Date }>(\n      `SELECT event_state, occurred_at\n         FROM public.camera_events\n        WHERE camera_id = $1::uuid\n          AND stream_name = $2\n          AND event_type = $3\n        ORDER BY occurred_at DESC\n        LIMIT 1`,\n      [body.camera_id, body.stream_name, eventType]\n    );\n\n    const previousState = normalizedState(previous.rows[0]?.event_state);\n    const currentState = normalizedState(eventState);\n    if (previousState !== null && currentState !== null && previousState === currentState) {\n      console.log('[onvif-events] repeated state skipped', {\n        stream_name: body.stream_name,\n        event_type: eventType,\n        event_state: eventState,\n        previous_occurred_at: previous.rows[0]?.occurred_at?.toISOString?.() ?? null,\n        occurred_at: occurredAt.toISOString()\n      });\n\n      return res.status(200).json({ ok: true, inserted: false, skipped: 'repeated_state' });\n    }\n  }\n\n  const hash = eventHash({\n",
     'backend repeated state guard'
   );
+}
+
+fs.writeFileSync(file, source);
+NODE
+
+node - "$PROJECT_DIR/backend/src/routes/tokens.ts" <<'NODE'
+const fs = require('fs');
+
+const file = process.argv[2];
+let source = fs.readFileSync(file, 'utf8');
+const from = "Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : undefined)";
+const to = "Buffer.from(String(chunk), (typeof encoding === 'string' ? encoding : undefined) as BufferEncoding | undefined)";
+
+if (source.includes(from)) {
+  source = source.replaceAll(from, to);
 }
 
 fs.writeFileSync(file, source);
