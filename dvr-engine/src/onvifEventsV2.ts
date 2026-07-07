@@ -41,6 +41,7 @@ const parser = new XMLParser({
 const sessions = new Map<string, CameraSession>();
 let timer: NodeJS.Timeout | null = null;
 let running = false;
+let lastSkipLogAt = 0;
 
 function cfg() {
   return {
@@ -53,7 +54,13 @@ function cfg() {
     subscribeTtlMs: Math.max(Number(process.env.ONVIF_SUBSCRIBE_TTL_MS || 5 * 60_000), 60_000),
     failRetryMinMs: Math.max(Number(process.env.ONVIF_FAIL_RETRY_MIN_MS || 10_000), 2000),
     failRetryMaxMs: Math.max(Number(process.env.ONVIF_FAIL_RETRY_MAX_MS || 60_000), 10_000),
-    quietLogMs: Math.max(Number(process.env.ONVIF_QUIET_LOG_MS || 120_000), 30_000)
+    quietLogMs: Math.max(Number(process.env.ONVIF_QUIET_LOG_MS || 120_000), 30_000),
+    skipStreams: new Set(
+      String(process.env.ONVIF_V2_SKIP_STREAMS || process.env.ONVIF_EVENTS_V2_SKIP_STREAMS || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
   };
 }
 
@@ -515,7 +522,18 @@ async function tick() {
       return;
     }
 
-    const cameras = await fetchCameras();
+    const allCameras = await fetchCameras();
+    const skippedCameras = allCameras.filter((camera) => config.skipStreams.has(camera.stream_name));
+    const cameras = allCameras.filter((camera) => !config.skipStreams.has(camera.stream_name));
+
+    if (skippedCameras.length && Date.now() - lastSkipLogAt > config.quietLogMs) {
+      lastSkipLogAt = Date.now();
+      console.log('[onvif-events:v2] skipped streams', {
+        streams: skippedCameras.map((camera) => camera.stream_name),
+        count: skippedCameras.length
+      });
+    }
+
     const ids = new Set(cameras.map((camera) => camera.id));
 
     for (const id of Array.from(sessions.keys())) {
@@ -560,7 +578,8 @@ export function startOnvifEventCollectorV2() {
     intervalMs: config.intervalMs,
     pullTimeout: config.pullTimeout,
     pullLimit: config.pullLimit,
-    subscribeTtlMs: config.subscribeTtlMs
+    subscribeTtlMs: config.subscribeTtlMs,
+    skipStreams: Array.from(config.skipStreams)
   });
 
   setTimeout(() => tick().catch(() => undefined), 1000);
