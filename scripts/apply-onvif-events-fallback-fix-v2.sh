@@ -4,7 +4,9 @@ set -Eeuo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 TARGET_STREAM="${TARGET_STREAM:-${TEST_STREAM:-onvif2}}"
+RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/rirodevdom/newdomofon-video/main}"
 DVR_FILE="$PROJECT_DIR/dvr-engine/src/onvifEventsV2.ts"
+LEGACY_FILE="$PROJECT_DIR/dvr-engine/src/onvifEventsLegacyFallback.ts"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$PROJECT_DIR/backups/onvif-events-fallback-fix-v2-$STAMP"
 
@@ -25,12 +27,20 @@ fi
 
 install -d -m 0750 "$BACKUP_DIR"
 cp -a "$DVR_FILE" "$BACKUP_DIR/onvifEventsV2.ts.bak"
+if [[ -f "$LEGACY_FILE" ]]; then
+  cp -a "$LEGACY_FILE" "$BACKUP_DIR/onvifEventsLegacyFallback.ts.bak"
+fi
 if [[ -f "$ENV_FILE" ]]; then
   cp -a "$ENV_FILE" "$BACKUP_DIR/app.env.bak"
 else
   install -d -m 0750 "$(dirname "$ENV_FILE")"
   touch "$ENV_FILE"
   chmod 0640 "$ENV_FILE" || true
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  echo "Updating legacy ONVIF fallback collector source from $RAW_BASE"
+  curl -fsSL "$RAW_BASE/dvr-engine/src/onvifEventsLegacyFallback.ts?$(date +%s)" -o "$LEGACY_FILE"
 fi
 
 node - "$DVR_FILE" <<'NODE'
@@ -133,13 +143,14 @@ function setValue(key, value) {
 
 setCsv('ONVIF_LEGACY_FALLBACK_STREAMS', stream);
 setCsv('ONVIF_V2_SKIP_STREAMS', stream);
-setValue('ONVIF_LEGACY_RECONNECT_MS', '86400000');
+setValue('ONVIF_LEGACY_IGNORE_INITIALIZED', 'true');
+setValue('ONVIF_LEGACY_RECONNECT_MS', process.env.ONVIF_LEGACY_RECONNECT_MS || '60000');
 
 fs.writeFileSync(file, source);
 NODE
 
 echo "Updated event collector env:"
-grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
+grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
 echo "Installing DVR build dependencies with dev packages..."
@@ -169,8 +180,8 @@ echo
 systemctl status newdomofon-video-dvr.service --no-pager -l | sed -n '1,40p' || true
 
 echo
-journalctl -u newdomofon-video-dvr -n 140 --no-pager -l \
-  | grep -E "onvif-events:(v2|legacy-fallback)|$TARGET_STREAM|CreatePullPoint|poll failed|stored event" || true
+journalctl -u newdomofon-video-dvr -n 180 --no-pager -l \
+  | grep -E "onvif-events:(v2|legacy-fallback)|$TARGET_STREAM|CreatePullPoint|poll failed|stored event|ignored initialized" || true
 
 echo
 echo "ONVIF events fallback fix v2 applied. Backup: $BACKUP_DIR"
