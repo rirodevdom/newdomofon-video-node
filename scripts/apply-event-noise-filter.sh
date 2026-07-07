@@ -29,6 +29,23 @@ append_env_default() {
   fi
 }
 
+wait_http() {
+  local name="$1"
+  local url="$2"
+  local timeout="${3:-30}"
+  local deadline=$((SECONDS + timeout))
+
+  echo
+  echo "== wait $name =="
+  until curl -fsS -m 3 "$url" >/dev/null; do
+    if (( SECONDS >= deadline )); then
+      echo "$name did not become ready within ${timeout}s: $url" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 smoke() {
   local name="$1"
   local url="$2"
@@ -99,6 +116,9 @@ popd >/dev/null
 
 systemctl restart newdomofon-video-backend.service || true
 systemctl restart newdomofon-public-events-proxy.service
+
+wait_http "backend" "http://127.0.0.1:3000/api/health" 30 || true
+wait_http "public-events-proxy" "http://127.0.0.1:3057/health" 30
 
 smoke "backend" "http://127.0.0.1:3000/api/health"
 smoke "public-events-proxy" "http://127.0.0.1:3057/health"
