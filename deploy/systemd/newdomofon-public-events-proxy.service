@@ -24,6 +24,7 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/var/log/newdomofon-video /tmp
+LogsDirectory=newdomofon-video
 CapabilityBoundingSet=
 AmbientCapabilities=
 LimitNOFILE=65535
