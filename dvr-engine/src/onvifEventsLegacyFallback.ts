@@ -4,7 +4,7 @@ import { config as dvrConfig } from './config.js';
 
 const require = createRequire(import.meta.url);
 const { Cam } = require('onvif');
-const VERSION = 'v140-stable-legacy-fallback-session';
+const VERSION = 'v141-legacy-fallback-explicit-streams';
 
 interface OnvifCamera {
   id: string;
@@ -37,10 +37,10 @@ function cfg() {
     ).replace(/\/+$/, ''),
     secret: process.env.INTERNAL_DVR_SECRET || '',
     streams: new Set(
-      String(
-        process.env.ONVIF_LEGACY_FALLBACK_STREAMS ||
-        'cam_10_130_1_219'
-      ).split(',').map((value) => value.trim()).filter(Boolean)
+      String(process.env.ONVIF_LEGACY_FALLBACK_STREAMS || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
     ),
     syncMs: Math.max(
       Number(process.env.ONVIF_LEGACY_SYNC_MS || 10_000),
@@ -146,7 +146,7 @@ function normalize(camera: OnvifCamera, event: any) {
   return {
     camera_id: camera.id,
     stream_name: camera.stream_name,
-    event_type: stateKey ? `${topic}/${stateKey}` : topic,
+    event_type: topic,
     event_state: stateKey
       ? String(simple[stateKey])
       : operation === undefined || operation === null
@@ -159,6 +159,7 @@ function normalize(camera: OnvifCamera, event: any) {
       collector: VERSION,
       topic,
       operation: operation ?? null,
+      state_key: stateKey ?? null,
       simple,
       raw: event
     }
@@ -364,6 +365,15 @@ async function sync() {
 export function startOnvifLegacyFallbackCollector() {
   if (timer) return;
   const config = cfg();
+
+  if (!config.streams.size) {
+    console.log('[onvif-events:legacy-fallback] disabled', {
+      version: VERSION,
+      reason: 'no streams configured'
+    });
+    return;
+  }
+
   console.log('[onvif-events:legacy-fallback] enabled', {
     version: VERSION,
     streams: Array.from(config.streams),
