@@ -39,71 +39,10 @@ else
 fi
 
 if command -v curl >/dev/null 2>&1; then
-  echo "Updating legacy ONVIF fallback collector source from $RAW_BASE"
+  echo "Updating ONVIF event collectors from $RAW_BASE"
+  curl -fsSL "$RAW_BASE/dvr-engine/src/onvifEventsV2.ts?$(date +%s)" -o "$DVR_FILE"
   curl -fsSL "$RAW_BASE/dvr-engine/src/onvifEventsLegacyFallback.ts?$(date +%s)" -o "$LEGACY_FILE"
 fi
-
-node - "$DVR_FILE" <<'NODE'
-const fs = require('fs');
-
-const file = process.argv[2];
-let source = fs.readFileSync(file, 'utf8');
-
-if (!source.includes('skipStreams: new Set(')) {
-  source = source.replace(
-    "    quietLogMs: Math.max(Number(process.env.ONVIF_QUIET_LOG_MS || 120_000), 30_000)\n  };",
-    `    quietLogMs: Math.max(Number(process.env.ONVIF_QUIET_LOG_MS || 120_000), 30_000),
-    skipStreams: new Set(
-      String(process.env.ONVIF_V2_SKIP_STREAMS || process.env.ONVIF_EVENTS_V2_SKIP_STREAMS || '')
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean)
-    )
-  };`
-  );
-}
-
-if (!source.includes('let lastSkipLogAt = 0;')) {
-  source = source.replace(
-    'let running = false;\n',
-    'let running = false;\nlet lastSkipLogAt = 0;\n'
-  );
-}
-
-if (!source.includes('const allCameras = await fetchCameras();')) {
-  source = source.replace(
-    '    const cameras = await fetchCameras();\n    const ids = new Set(cameras.map((camera) => camera.id));',
-    `    const allCameras = await fetchCameras();
-    const skippedCameras = allCameras.filter((camera) => config.skipStreams.has(camera.stream_name));
-    const cameras = allCameras.filter((camera) => !config.skipStreams.has(camera.stream_name));
-
-    if (skippedCameras.length && Date.now() - lastSkipLogAt > config.quietLogMs) {
-      lastSkipLogAt = Date.now();
-      console.log('[onvif-events:v2] skipped streams', {
-        streams: skippedCameras.map((camera) => camera.stream_name),
-        count: skippedCameras.length
-      });
-    }
-
-    const ids = new Set(cameras.map((camera) => camera.id));`
-  );
-}
-
-if (!source.includes('skipStreams: Array.from(config.skipStreams)')) {
-  source = source.replace(
-    '    subscribeTtlMs: config.subscribeTtlMs\n  });',
-    `    subscribeTtlMs: config.subscribeTtlMs,
-    skipStreams: Array.from(config.skipStreams)
-  });`
-  );
-}
-
-if (!source.includes('skipStreams: new Set(') || !source.includes('const allCameras = await fetchCameras();')) {
-  throw new Error('Failed to patch onvifEventsV2.ts; source layout was not recognized');
-}
-
-fs.writeFileSync(file, source);
-NODE
 
 node - "$ENV_FILE" "$TARGET_STREAM" <<'NODE'
 const fs = require('fs');
@@ -141,17 +80,23 @@ function setValue(key, value) {
   source = `${source.replace(/\s*$/, '')}\n${key}=${value}\n`;
 }
 
+function deleteValue(key) {
+  const re = new RegExp(`^${escapeRegExp(key)}=.*\\n?`, 'm');
+  source = source.replace(re, '');
+}
+
 setCsv('ONVIF_LEGACY_FALLBACK_STREAMS', stream);
 setCsv('ONVIF_V2_SKIP_STREAMS', stream);
 setValue('ONVIF_LEGACY_IGNORE_INITIALIZED', 'true');
 setValue('ONVIF_LEGACY_INITIALIZED_STATE_EVENTS', 'true');
-setValue('ONVIF_LEGACY_RECONNECT_MS', process.env.ONVIF_LEGACY_RECONNECT_MS || '5000');
+setValue('ONVIF_LEGACY_SESSION_TTL_MS', process.env.ONVIF_LEGACY_SESSION_TTL_MS || '0');
+deleteValue('ONVIF_LEGACY_RECONNECT_MS');
 
 fs.writeFileSync(file, source);
 NODE
 
 echo "Updated event collector env:"
-grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_INITIALIZED_STATE_EVENTS|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
+grep -E '^(ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS|ONVIF_LEGACY_IGNORE_INITIALIZED|ONVIF_LEGACY_INITIALIZED_STATE_EVENTS|ONVIF_LEGACY_SESSION_TTL_MS|ONVIF_LEGACY_RECONNECT_MS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
 echo "Installing DVR build dependencies with dev packages..."
