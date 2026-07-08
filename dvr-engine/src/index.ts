@@ -77,7 +77,13 @@ function parseRange(req: express.Request, res: express.Response, maxSeconds = co
   return { start, end };
 }
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'dvr-engine', mode: isNodeMode() ? 'node' : 'standalone', node_id: config.nodeId || null }));
+app.get('/health', (_req, res) => res.json({
+  ok: true,
+  service: 'dvr-engine',
+  mode: config.role,
+  node_id: config.nodeId || null,
+  recording_enabled: config.role !== 'master'
+}));
 app.get('/recorders', (_req, res) => res.json({ items: getAllRecorderStatuses() }));
 
 app.get('/cameras/:streamName/status', (req, res) => {
@@ -230,29 +236,34 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599 ? statusCode : 500).json({ error: message });
 });
 
-await fs.mkdir(config.dvrRoot, { recursive: true });
-await reloadCameras().catch(console.error);
-setInterval(() => reloadCameras().catch(console.error), config.cameraReloadSeconds * 1000);
-if (isNodeMode()) {
-  heartbeat().catch(console.error);
-  setInterval(() => heartbeat().catch(console.error), 15_000);
-  setInterval(() => pollCommands(reloadCameras, async () => {
-    stopAllRecorders();
-    stopAllVideoMotionDetectors();
-    await reloadCameras();
-    startVideoMotionDetector();
-  }).catch(console.error), 10_000);
+const server = app.listen(config.port, () => console.log(`DVR engine listening on ${config.port} role=${config.role}`));
+
+if (config.role === 'master') {
+  console.warn('[dvr-engine] master role is health-only; recorders and collectors are not started');
+} else {
+  await fs.mkdir(config.dvrRoot, { recursive: true });
+  await reloadCameras().catch(console.error);
+  setInterval(() => reloadCameras().catch(console.error), config.cameraReloadSeconds * 1000);
+  if (isNodeMode()) {
+    heartbeat().catch(console.error);
+    setInterval(() => heartbeat().catch(console.error), 15_000);
+    setInterval(() => pollCommands(reloadCameras, async () => {
+      stopAllRecorders();
+      stopAllVideoMotionDetectors();
+      await reloadCameras();
+      startVideoMotionDetector();
+    }).catch(console.error), 10_000);
+  }
+  setInterval(() => cleanupArchives().catch(console.error), config.cleanupIntervalMinutes * 60_000);
+  setInterval(() => cleanupDeviceArchiveSessions(), 60_000);
+  cleanupArchives().catch(console.error);
+  // old ONVIF collector disabled
+  startOnvifEventCollectorV2();
+  startOnvifLegacyFallbackCollector();
+  startHikvisionEventCollector();
+  startDeviceArchiveIndexer();
+  startVideoMotionDetector();
 }
-setInterval(() => cleanupArchives().catch(console.error), config.cleanupIntervalMinutes * 60_000);
-setInterval(() => cleanupDeviceArchiveSessions(), 60_000);
-cleanupArchives().catch(console.error);
-// old ONVIF collector disabled
-startOnvifEventCollectorV2();
-startOnvifLegacyFallbackCollector();
-startHikvisionEventCollector();
-startDeviceArchiveIndexer();
-startVideoMotionDetector();
-const server = app.listen(config.port, () => console.log(`DVR engine listening on ${config.port}`));
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}`);
