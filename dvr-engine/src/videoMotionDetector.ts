@@ -1,10 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import path from 'node:path';
 import { config } from './config.js';
 import { query } from './db.js';
 import { isNodeMode, loadAssignedCameras } from './nodeClient.js';
+import { streamRoot } from './storage.js';
 import type { CameraConfig } from './types.js';
 
-const VERSION = 'v1-ffmpeg-scene-motion';
+const VERSION = 'v2-hls-scene-motion';
+
+type VideoMotionSource = 'hls' | 'rtsp';
 
 interface DetectorState {
   camera: CameraConfig;
@@ -37,6 +41,7 @@ interface DetectorConfig {
   maxDetectors: number;
   ffmpegLog: boolean;
   eventType: string;
+  source: VideoMotionSource;
 }
 
 const detectors = new Map<string, DetectorState>();
@@ -61,6 +66,7 @@ function cfg(): DetectorConfig {
   const streamsRaw = String(process.env.VIDEO_MOTION_STREAMS || process.env.DVR_VIDEO_MOTION_STREAMS || '').trim();
   const streams = new Set(streamsRaw.split(',').map((value) => value.trim()).filter(Boolean));
   const allStreams = streams.has('*');
+  const sourceRaw = String(process.env.VIDEO_MOTION_SOURCE || process.env.DVR_VIDEO_MOTION_SOURCE || 'hls').toLowerCase();
 
   return {
     enabled: boolEnv('VIDEO_MOTION_ENABLED', streams.size > 0),
@@ -79,7 +85,8 @@ function cfg(): DetectorConfig {
     restartMaxMs: Math.round(numEnv('VIDEO_MOTION_RESTART_MAX_MS', 60000, 5000, 600000)),
     maxDetectors: Math.round(numEnv('VIDEO_MOTION_MAX_DETECTORS', 8, 1, 10000)),
     ffmpegLog: boolEnv('VIDEO_MOTION_FFMPEG_LOG', false),
-    eventType: String(process.env.VIDEO_MOTION_EVENT_TYPE || 'video.motion')
+    eventType: String(process.env.VIDEO_MOTION_EVENT_TYPE || 'video.motion'),
+    source: sourceRaw === 'rtsp' ? 'rtsp' : 'hls'
   };
 }
 
@@ -96,6 +103,26 @@ function redactUri(uri: string) {
   } catch {
     return '<invalid-url>';
   }
+}
+
+function detectorInput(camera: CameraConfig, configValue: DetectorConfig) {
+  if (configValue.source === 'rtsp') {
+    return {
+      input: camera.source_url,
+      display: redactUri(camera.source_url),
+      preInputArgs: [
+        '-rtsp_transport', process.env.DVR_RTSP_TRANSPORT || 'tcp',
+        '-timeout', String(Number(process.env.DVR_RTSP_TIMEOUT_US || 15_000_000))
+      ]
+    };
+  }
+
+  const playlist = path.join(streamRoot(camera.stream_name), 'live.m3u8');
+  return {
+    input: playlist,
+    display: playlist,
+    preInputArgs: ['-live_start_index', '-3']
+  };
 }
 
 function cameraFingerprint(camera: CameraConfig) {
@@ -145,6 +172,7 @@ async function postEvent(camera: CameraConfig, active: boolean, score: number, f
         fps: configValue.fps,
         scale_width: configValue.scaleWidth,
         end_idle_ms: configValue.endIdleMs,
+        source: configValue.source,
         frame
       }
     })
@@ -235,14 +263,15 @@ async function startDetector(camera: CameraConfig, restarts: number) {
   const configValue = cfg();
   if (!camera.source_url) return;
 
+  const input = detectorInput(camera, configValue);
   const filter = `fps=${configValue.fps},scale=${configValue.scaleWidth}:-1,select='gte(scene,0)',metadata=mode=print:key=lavfi.scene_score:file=-`;
   const args = [
     '-hide_banner',
     '-loglevel', configValue.ffmpegLog ? 'info' : 'warning',
     '-nostdin',
-    '-rtsp_transport', process.env.DVR_RTSP_TRANSPORT || 'tcp',
-    '-timeout', String(Number(process.env.DVR_RTSP_TIMEOUT_US || 15_000_000)),
-    '-i', camera.source_url,
+    '-fflags', '+genpts+discardcorrupt',
+    ...input.preInputArgs,
+    '-i', input.input,
     '-an',
     '-vf', filter,
     '-f', 'null',
@@ -268,7 +297,8 @@ async function startDetector(camera: CameraConfig, restarts: number) {
     version: VERSION,
     stream_name: camera.stream_name,
     pid: child.pid,
-    source: redactUri(camera.source_url),
+    sourceMode: configValue.source,
+    source: input.display,
     fps: configValue.fps,
     width: configValue.scaleWidth,
     threshold: configValue.threshold,
@@ -393,6 +423,7 @@ export function startVideoMotionDetector() {
 
   console.log('[video-motion] enabled', {
     version: VERSION,
+    source: configValue.source,
     streams: configValue.allStreams ? ['*'] : Array.from(configValue.streams),
     fps: configValue.fps,
     scaleWidth: configValue.scaleWidth,
