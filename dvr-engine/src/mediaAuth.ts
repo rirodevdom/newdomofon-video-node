@@ -11,7 +11,7 @@ function allowPermanentNoExpMediaToken(payload: any) {
   if (payload.exp !== undefined && payload.exp !== null) return false;
   const version = String(process.env.PERMANENT_MEDIA_LINK_VERSION || '1');
   if (String(payload.link_version || '') !== version) return false;
-  return ['live', 'archive', 'camera'].includes(String(payload.scope || ''));
+  return ['camera', 'live', 'archive'].includes(String(payload.scope || ''));
 }
 function permanentMediaLinksEnabled(): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env.PERMANENT_MEDIA_LINKS || process.env.PERMANENT_CAMERA_LINKS || '').toLowerCase());
@@ -53,7 +53,16 @@ function rewritePermanentMediaToken(token: any): string | null {
   }
 }
 
-type Scope = 'live' | 'archive' | 'export' | 'file' | 'status';
+type Scope = 'camera' | 'live' | 'archive' | 'export' | 'file' | 'status';
+
+const cameraScopeTargets: Scope[] = ['live', 'archive', 'file', 'status'];
+
+function scopeAllowed(payloadScope: unknown, allowedScopes: Scope[]): boolean {
+  const scope = String(payloadScope || '') as Scope;
+  if (allowedScopes.includes(scope)) return true;
+  if (scope === 'camera') return allowedScopes.some((allowed) => cameraScopeTargets.includes(allowed));
+  return false;
+}
 
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -79,7 +88,7 @@ function verifyToken(rawToken: string, streamName: string, allowedScopes: Scope[
   }
 
   if (payload.stream_name !== streamName) return false;
-  if (!allowedScopes.includes(payload.scope)) return false;
+  if (!scopeAllowed(payload.scope, allowedScopes)) return false;
   const exp = Number(payload.exp);
   if (Number.isFinite(exp)) {
     if (exp < Math.floor(Date.now() / 1000)) return false;
