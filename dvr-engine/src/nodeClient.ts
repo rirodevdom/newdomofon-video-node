@@ -60,7 +60,8 @@ export async function heartbeat(): Promise<void> {
       hls: true,
       archive: true,
       export: true,
-      onvif_events: Boolean(process.env.INTERNAL_DVR_SECRET)
+      onvif_events: Boolean(process.env.INTERNAL_DVR_SECRET),
+      video_motion: ['1', 'true', 'yes', 'on'].includes(String(process.env.VIDEO_MOTION_ENABLED || process.env.DVR_VIDEO_MOTION_ENABLED || '').toLowerCase())
     },
     storage: await storageStatus()
   };
