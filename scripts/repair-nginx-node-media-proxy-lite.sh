@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 NODE_DVR_URL="${NODE_DVR_URL:-http://10.106.1.31:3010}"
-SITE_CONF="${SITE_CONF:-/etc/nginx/sites-available/newdomofon-video.conf}"
+SITE_CONF="${SITE_CONF:-/etc/nginx/sites-enabled/newdomofon-video.conf}"
 BACKUP="${SITE_CONF}.repair-$(date +%Y%m%d-%H%M%S).bak"
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -10,7 +10,12 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-cp -a "$SITE_CONF" "$BACKUP"
+if [[ ! -e "$SITE_CONF" ]]; then
+  echo "Config not found: $SITE_CONF" >&2
+  exit 2
+fi
+
+cp -aL "$SITE_CONF" "$BACKUP"
 
 python3 - "$SITE_CONF" "$NODE_DVR_URL" <<'PY'
 from pathlib import Path
@@ -33,7 +38,10 @@ text = re.sub(
     text,
 )
 
-location_start = re.compile(r'\n\s*location\s+(?:\^~\s+|~\s+)?(?:\^)?/(?:cameras|files|device-archive)(?:/|[^\{]*)\{', re.M)
+location_start = re.compile(
+    r'\n\s*location\s+(?:\^~\s+|~\s+)?(?:\^)?/(?:cameras|files|device-archive)(?:/|[^\{]*)\{',
+    re.M,
+)
 
 def find_block_end(src: str, brace_pos: int) -> int:
     depth = 0
@@ -52,10 +60,13 @@ def find_block_end(src: str, brace_pos: int) -> int:
     return len(src)
 
 # Remove any old media location that proxies to the video node, with or without :3010.
-# Keep unrelated Vue/API locations intact.
 out = []
 pos = 0
-for m in location_start.finditer(text):
+while True:
+    m = location_start.search(text, pos)
+    if not m:
+        out.append(text[pos:])
+        break
     out.append(text[pos:m.start()])
     brace = text.find('{', m.end() - 1)
     end = find_block_end(text, brace) if brace >= 0 else m.end()
@@ -65,10 +76,7 @@ for m in location_start.finditer(text):
     else:
         out.append(block)
         pos = end
-out.append(text[pos:])
 text = ''.join(out)
-
-# Clean excessive blank lines.
 text = re.sub(r'\n{4,}', '\n\n\n', text)
 
 cors = '''        if ($request_method = OPTIONS) {
@@ -124,7 +132,9 @@ if nginx -t; then
   systemctl reload nginx
   echo "OK: nginx media proxy repaired"
 else
-  echo "ERROR: nginx config still invalid. Backup: $BACKUP" >&2
+  echo "ERROR: nginx config still invalid, rolling back. Backup: $BACKUP" >&2
+  cp -a "$BACKUP" "$SITE_CONF"
+  nginx -t || true
   exit 2
 fi
 
