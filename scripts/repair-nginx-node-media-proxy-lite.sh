@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 NODE_DVR_URL="${NODE_DVR_URL:-http://10.106.1.31:3010}"
 SITE_CONF="${SITE_CONF:-/etc/nginx/sites-enabled/newdomofon-video.conf}"
-BACKUP="${SITE_CONF}.repair-$(date +%Y%m%d-%H%M%S).bak"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/newdomofon-video/nginx}"
+BACKUP="${BACKUP_DIR}/$(basename "$SITE_CONF").repair-$(date +%Y%m%d-%H%M%S).bak"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root" >&2
@@ -15,6 +16,7 @@ if [[ ! -e "$SITE_CONF" ]]; then
   exit 2
 fi
 
+mkdir -p "$BACKUP_DIR"
 cp -aL "$SITE_CONF" "$BACKUP"
 
 python3 - "$SITE_CONF" "$NODE_DVR_URL" <<'PY'
