@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-NODE_DVR_URL="${NODE_DVR_URL:-http://10.106.1.31:3010}"
 SITE_CONF="${SITE_CONF:-/etc/nginx/sites-enabled/newdomofon-video.conf}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/newdomofon-video/nginx}"
-BACKUP="${BACKUP_DIR}/$(basename "$SITE_CONF").repair-$(date +%Y%m%d-%H%M%S).bak"
+BACKUP="${BACKUP_DIR}/$(basename "$SITE_CONF").conservative-repair-$(date +%Y%m%d-%H%M%S).bak"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root" >&2
@@ -17,144 +16,74 @@ if [[ ! -e "$SITE_CONF" ]]; then
 fi
 
 mkdir -p "$BACKUP_DIR"
+
+# Nginx parses every file in sites-enabled. Never leave backups there.
+find /etc/nginx/sites-enabled -maxdepth 1 -type f \
+  \( -name '*.bak' -o -name '*.repair-*' -o -name '*before-spa-location-fix*' \) \
+  -exec mv -t "$BACKUP_DIR" {} + 2>/dev/null || true
+
 cp -aL "$SITE_CONF" "$BACKUP"
 
-python3 - "$SITE_CONF" "$NODE_DVR_URL" <<'PY'
+python3 - "$SITE_CONF" <<'PY'
 from pathlib import Path
 import re
 import sys
 
-path = Path(sys.argv[1])
-node_url = sys.argv[2].rstrip('/')
-text = path.read_text()
+p = Path(sys.argv[1])
+s = p.read_text()
 
-# Fix malformed snippets left by older nginx camera-route patch attempts.
-# Example observed on production master:
-#   # Frontend camera pages like /cameras/<uuid> must fall through to the SPA.location /cameras/ {
-#       try_files $uri $uri/ /index.html;
-#   }# BEGIN newdomofon-smartyard-origin-fix
-text = text.replace(
+# Repair one known malformed camera SPA snippet observed on production master.
+s = s.replace(
     '# Frontend camera pages like /cameras/<uuid> must fall through to the SPA.location /cameras/ {',
     '# Frontend camera pages like /cameras/<uuid> must fall through to the SPA.\n    location /cameras/ {'
 )
-text = re.sub(r'}\s*# BEGIN newdomofon-smartyard-origin-fix', '}\n\n    # BEGIN newdomofon-smartyard-origin-fix', text)
+s = re.sub(r'}\s*# BEGIN newdomofon-smartyard-origin-fix', '}\n\n    # BEGIN newdomofon-smartyard-origin-fix', s)
+s = re.sub(r'}\s*location', '}\n    location', s)
 
-# Normalize malformed adjacency created by previous repair attempts.
-text = re.sub(r'}\s*location', '}\n    location', text)
+start_marker = '    # BEGIN NEWDOMOFON NODE MEDIA PROXY'
+end_marker = '    # END NEWDOMOFON NODE MEDIA PROXY'
+if start_marker not in s or end_marker not in s:
+    raise SystemExit('NEWDOMOFON NODE MEDIA PROXY block not found; refusing broad rewrite')
 
-# Remove all marked generated media proxy blocks first.
-text = re.sub(
-    r'\n?\s*# BEGIN NEWDOMOFON NODE MEDIA PROXY\n[\s\S]*?\n\s*# END NEWDOMOFON NODE MEDIA PROXY\n?',
-    '\n',
-    text,
+start = s.index(start_marker)
+end = s.index(end_marker, start)
+block = s[start:end]
+
+# Only adjust CORS hiding inside the existing generated media proxy block.
+# Do not rewrite unrelated SmartYard/compat locations.
+block = re.sub(
+    r'\n\s*proxy_hide_header Access-Control-Allow-(?:Origin|Methods|Headers|Credentials|Expose-Headers|Max-Age);',
+    '',
+    block,
 )
 
-# Remove every explicit media location block we created in previous attempts.
-# Keep `location /cameras/ { try_files ... }` for SPA camera pages.
-location_start = re.compile(
-    r'\n\s*location\s+(?:\^~\s+|~\s+)?(?:\^)?/(?:files|device-archive)(?:/|[^\{]*)\{'
-    r'|\n\s*location\s+~\s+\^/cameras/[^\{]*\{',
-    re.M,
-)
-
-def find_block_end(src: str, brace_pos: int) -> int:
-    if brace_pos < 0:
-        return -1
-    depth = 0
-    i = brace_pos
-    while i < len(src):
-        ch = src[i]
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                i += 1
-                while i < len(src) and src[i] in ' \t\r\n':
-                    i += 1
-                return i
-        i += 1
-    return len(src)
-
-out = []
-pos = 0
-while True:
-    m = location_start.search(text, pos)
-    if not m:
-        out.append(text[pos:])
-        break
-    out.append(text[pos:m.start()])
-    brace = text.find('{', m.end() - 1)
-    end = find_block_end(text, brace)
-    pos = end if end >= 0 else m.end()
-text = ''.join(out)
-text = re.sub(r'\n{4,}', '\n\n\n', text)
-
-cors = '''        proxy_hide_header Access-Control-Allow-Origin;
+hide = '''        proxy_hide_header Access-Control-Allow-Origin;
         proxy_hide_header Access-Control-Allow-Methods;
         proxy_hide_header Access-Control-Allow-Headers;
         proxy_hide_header Access-Control-Allow-Credentials;
         proxy_hide_header Access-Control-Expose-Headers;
         proxy_hide_header Access-Control-Max-Age;
-
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin "*" always;
-            add_header Access-Control-Allow-Methods "GET,HEAD,OPTIONS" always;
-            add_header Access-Control-Allow-Headers "authorization,content-type,range,cache-control,pragma,accept,origin,x-requested-with" always;
-            add_header Access-Control-Max-Age "600" always;
-            return 204;
-        }
-
-        add_header Access-Control-Allow-Origin "*" always;
-        add_header Access-Control-Allow-Methods "GET,HEAD,OPTIONS" always;
-        add_header Access-Control-Allow-Headers "authorization,content-type,range,cache-control,pragma,accept,origin,x-requested-with" always;
-        add_header Access-Control-Expose-Headers "content-length,content-range,accept-ranges,cache-control,content-type" always;
 '''
 
-proxy = f'''        proxy_pass {node_url};
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 10s;
-        proxy_send_timeout 3600s;
-        proxy_read_timeout 3600s;
-        proxy_buffering off;
-'''
+out = []
+for line in block.splitlines(True):
+    out.append(line)
+    if re.match(r'\s*location\s+(?:~\s+\^/cameras/|\^~\s+/files/|\^~\s+/device-archive/)', line):
+        out.append(hide)
 
-block = f'''    # BEGIN NEWDOMOFON NODE MEDIA PROXY
-    location ~ ^/cameras/[^/]+/(?:live\.m3u8|archive\.m3u8|device-archive\.m3u8|export\.mp4|archive/ranges|device-archive/session|device-archive/ranges)$ {{
-{cors}{proxy}    }}
-
-    location ^~ /files/ {{
-{cors}{proxy}    }}
-
-    location ^~ /device-archive/ {{
-{cors}{proxy}    }}
-    # END NEWDOMOFON NODE MEDIA PROXY
-
-'''
-
-marker = '    location /assets/ {'
-if marker not in text:
-    marker = '    location / {'
-if marker not in text:
-    raise SystemExit('Cannot find nginx insertion point')
-text = text.replace(marker, block + marker, 1)
-
-path.write_text(text)
+s = s[:start] + ''.join(out) + s[end:]
+p.write_text(s)
 PY
 
 if nginx -t; then
   systemctl reload nginx
-  echo "OK: nginx media proxy repaired"
+  echo "OK: nginx media proxy conservative repair complete"
 else
-  echo "ERROR: nginx config still invalid, rolling back. Backup: $BACKUP" >&2
+  echo "ERROR: nginx config invalid, rolling back. Backup: $BACKUP" >&2
   cp -a "$BACKUP" "$SITE_CONF"
   nginx -t || true
   exit 2
 fi
 
 echo "backup=$BACKUP"
-grep -nE 'BEGIN NEWDOMOFON NODE MEDIA PROXY|location (~|\^~) /(cameras|files|device-archive)|proxy_pass http|proxy_hide_header Access-Control-Allow-Origin' "$SITE_CONF" || true
+grep -nE 'BEGIN NEWDOMOFON NODE MEDIA PROXY|location (~|\^~) /(cameras|files|device-archive)|proxy_hide_header Access-Control-Allow-Origin|proxy_pass http' "$SITE_CONF" || true
