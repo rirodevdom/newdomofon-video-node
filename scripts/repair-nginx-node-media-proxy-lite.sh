@@ -90,7 +90,14 @@ while True:
 text = ''.join(out)
 text = re.sub(r'\n{4,}', '\n\n\n', text)
 
-cors = '''        if ($request_method = OPTIONS) {
+cors = '''        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_hide_header Access-Control-Allow-Methods;
+        proxy_hide_header Access-Control-Allow-Headers;
+        proxy_hide_header Access-Control-Allow-Credentials;
+        proxy_hide_header Access-Control-Expose-Headers;
+        proxy_hide_header Access-Control-Max-Age;
+
+        if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin "*" always;
             add_header Access-Control-Allow-Methods "GET,HEAD,OPTIONS" always;
             add_header Access-Control-Allow-Headers "authorization,content-type,range,cache-control,pragma,accept,origin,x-requested-with" always;
@@ -150,4 +157,4 @@ else
 fi
 
 echo "backup=$BACKUP"
-grep -nE 'BEGIN NEWDOMOFON NODE MEDIA PROXY|location (~|\^~) /(cameras|files|device-archive)|proxy_pass http' "$SITE_CONF" || true
+grep -nE 'BEGIN NEWDOMOFON NODE MEDIA PROXY|location (~|\^~) /(cameras|files|device-archive)|proxy_pass http|proxy_hide_header Access-Control-Allow-Origin' "$SITE_CONF" || true
