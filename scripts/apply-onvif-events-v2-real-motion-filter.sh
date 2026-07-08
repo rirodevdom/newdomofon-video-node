@@ -32,7 +32,12 @@ const fs = require('fs');
 const file = process.argv[2];
 let source = fs.readFileSync(file, 'utf8');
 
-source = source.replace(/const VERSION = '[^']*';/, "const VERSION = 'v144-real-motion-filter';");
+source = source.replace(/const VERSION = '[^']*';/, "const VERSION = 'v145-snapshot-state-transitions';");
+
+source = source.replace(
+  "const sessions = new Map<string, CameraSession>();\nlet timer: NodeJS.Timeout | null = null;",
+  "const sessions = new Map<string, CameraSession>();\nconst snapshotStates = new Map<string, string>();\nlet timer: NodeJS.Timeout | null = null;"
+);
 
 source = source.replace(
   "    subscribeTtlMs: Math.max(Number(process.env.ONVIF_SUBSCRIBE_TTL_MS || 5 * 60_000), 60_000),",
@@ -48,7 +53,8 @@ source = source.replace(
         .filter(Boolean)
     ),
     ignoreInitialized: String(process.env.ONVIF_V2_IGNORE_INITIALIZED || 'true').toLowerCase() !== 'false',
-    detailLog: String(process.env.ONVIF_EVENT_DETAIL_LOG || 'true').toLowerCase() !== 'false'
+    detailLog: String(process.env.ONVIF_EVENT_DETAIL_LOG || 'true').toLowerCase() !== 'false',
+    snapshotTransitions: String(process.env.ONVIF_V2_SNAPSHOT_TRANSITIONS || 'true').toLowerCase() !== 'false'
   };
 }`
 );
@@ -74,13 +80,21 @@ function eventDebugSample(event: any) {
     source: event.source_name || null,
     operation: event?.data?.operation || null,
     state_key: event?.data?.state_key || null,
+    synthetic: Boolean(event?.data?._newdomofon_snapshot_transition),
+    previous: event?.data?._newdomofon_previous_state || null,
     simple
   };
+}
+
+function snapshotStateKey(camera: OnvifCamera, topic: string, source: string | null, key: string | null) {
+  return [camera.id, camera.stream_name, topic || 'onvif.event', source || '', key || 'state'].join('|');
 }
 
 function mapEvents(camera: OnvifCamera, xml: any) {
   const config = cfg();
   let ignoredInitialized = 0;
+  let snapshotsSeen = 0;
+  let synthesizedTransitions = 0;
   const events: any[] = [];
 
   for (const notification of collectNotifications(xml)) {
@@ -90,20 +104,17 @@ function mapEvents(camera: OnvifCamera, xml: any) {
     const state = eventState(items);
     const source = sourceName(items);
     const operation = propertyOperation(notification);
+    const normalizedTopic = topic || topicLeaf(topic);
+    const originalOccurredAt = occurredAt(notification);
 
-    if (config.ignoreInitialized && String(operation || '').toLowerCase() === 'initialized') {
-      ignoredInitialized += 1;
-      continue;
-    }
-
-    events.push({
+    const baseEvent = {
       camera_id: camera.id,
       stream_name: camera.stream_name,
-      event_type: topic || topicLeaf(topic),
+      event_type: normalizedTopic,
       event_state: state,
       topic,
       source_name: source,
-      occurred_at: occurredAt(notification),
+      occurred_at: originalOccurredAt,
       data: {
         simple: items,
         simpleItems: items,
@@ -112,14 +123,50 @@ function mapEvents(camera: OnvifCamera, xml: any) {
         operation,
         raw: notification
       }
-    });
+    };
+
+    if (String(operation || '').toLowerCase() === 'initialized') {
+      snapshotsSeen += 1;
+      const snapshotState = state === null || state === undefined ? null : String(state);
+      const keyName = snapshotStateKey(camera, normalizedTopic, source, key);
+      const previous = snapshotStates.get(keyName);
+
+      if (snapshotState !== null) {
+        snapshotStates.set(keyName, snapshotState);
+      }
+
+      if (config.snapshotTransitions && snapshotState !== null && previous !== undefined && previous !== snapshotState) {
+        synthesizedTransitions += 1;
+        events.push({
+          ...baseEvent,
+          occurred_at: nowIso(),
+          data: {
+            ...baseEvent.data,
+            operation: 'SnapshotStateChanged',
+            original_operation: operation,
+            original_occurred_at: originalOccurredAt,
+            _newdomofon_snapshot_transition: true,
+            _newdomofon_previous_state: previous,
+            _newdomofon_current_state: snapshotState
+          }
+        });
+      } else if (config.ignoreInitialized) {
+        ignoredInitialized += 1;
+      } else {
+        events.push(baseEvent);
+      }
+
+      continue;
+    }
+
+    events.push(baseEvent);
   }
 
-  return { events, ignoredInitialized };
+  return { events, ignoredInitialized, snapshotsSeen, synthesizedTransitions };
 }
 
 `;
-source = `${source.slice(0, mapStart)}${mapReplacement}${source.slice(backendStart)}`;
+source = source.slice(0, mapStart) + mapReplacement + source.slice(backendStart);
 
 source = source.replace(
   '    const messages = await pullMessages(session.pullPoint, creds.username, creds.password);\n    const events = mapEvents(camera, messages);\n\n    markOk(session);',
@@ -127,8 +174,8 @@ source = source.replace(
     const mapped = mapEvents(camera, messages);
     const events = mapped.events;
 
-    if (mapped.ignoredInitialized && config.detailLog && (!session.lastLogAt || now - session.lastLogAt > config.quietLogMs)) {
-      console.log('[onvif-events:v2] ' + camera.stream_name + ' ignored initialized snapshots: count=' + mapped.ignoredInitialized);
+    if ((mapped.ignoredInitialized || mapped.synthesizedTransitions) && config.detailLog && (!session.lastLogAt || now - session.lastLogAt > config.quietLogMs || mapped.synthesizedTransitions)) {
+      console.log('[onvif-events:v2] ' + camera.stream_name + ' snapshot states: seen=' + mapped.snapshotsSeen + ' ignored=' + mapped.ignoredInitialized + ' synthesized=' + mapped.synthesizedTransitions);
     }
 
     markOk(session);`
@@ -154,8 +201,8 @@ source = source.replace(
       }`
 );
 
-if (!source.includes("v144-real-motion-filter") || !source.includes('ignored initialized snapshots') || !source.includes('eventDebugSample')) {
-  throw new Error('ONVIF v144 real motion patch did not apply cleanly');
+if (!source.includes("v145-snapshot-state-transitions") || !source.includes('snapshotStateKey') || !source.includes('SnapshotStateChanged')) {
+  throw new Error('ONVIF v145 snapshot transition patch did not apply cleanly');
 }
 
 fs.writeFileSync(file, source);
@@ -189,6 +236,7 @@ setValue('ONVIF_SYNC_LOG_MS', process.env.ONVIF_SYNC_LOG_MS || '60000');
 setValue('ONVIF_SUBSCRIBE_TTL_MS', process.env.ONVIF_SUBSCRIBE_TTL_MS || '3600000');
 setValue('ONVIF_V2_IGNORE_INITIALIZED', process.env.ONVIF_V2_IGNORE_INITIALIZED || 'true');
 setValue('ONVIF_EVENT_DETAIL_LOG', process.env.ONVIF_EVENT_DETAIL_LOG || 'true');
+setValue('ONVIF_V2_SNAPSHOT_TRANSITIONS', process.env.ONVIF_V2_SNAPSHOT_TRANSITIONS || 'true');
 fs.writeFileSync(file, lines.join('\n').replace(/\n*$/, '\n'));
 NODE
 
@@ -196,7 +244,7 @@ echo "Patched collector version:"
 grep -m1 "const VERSION" "$DVR_FILE" || true
 
 echo "Updated ONVIF event env:"
-grep -E '^(ONVIF_EVENT_POLL_INTERVAL_MS|ONVIF_EVENT_CONCURRENCY|ONVIF_SYNC_LOG_MS|ONVIF_SUBSCRIBE_TTL_MS|ONVIF_V2_IGNORE_INITIALIZED|ONVIF_EVENT_DETAIL_LOG|ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS)=' "$ENV_FILE" || true
+grep -E '^(ONVIF_EVENT_POLL_INTERVAL_MS|ONVIF_EVENT_CONCURRENCY|ONVIF_SYNC_LOG_MS|ONVIF_SUBSCRIBE_TTL_MS|ONVIF_V2_IGNORE_INITIALIZED|ONVIF_EVENT_DETAIL_LOG|ONVIF_V2_SNAPSHOT_TRANSITIONS|ONVIF_LEGACY_FALLBACK_STREAMS|ONVIF_V2_SKIP_STREAMS)=' "$ENV_FILE" || true
 
 pushd "$PROJECT_DIR/dvr-engine" >/dev/null
 echo "Building DVR engine..."
@@ -217,8 +265,8 @@ echo
 systemctl status newdomofon-video-dvr.service --no-pager -l | sed -n '1,35p' || true
 
 echo
-journalctl -u newdomofon-video-dvr -n 160 --no-pager -l \
-  | grep -E "v144|ignored initialized|stored events:|pullpoint created|poll failed|legacy-fallback" || true
+journalctl -u newdomofon-video-dvr -n 180 --no-pager -l \
+  | grep -E "v145|snapshot states|stored events:|pullpoint created|poll failed|legacy-fallback" || true
 
 echo
-echo "ONVIF v2 real motion filter applied. Backup: $BACKUP_DIR"
+echo "ONVIF v2 snapshot transition filter applied. Backup: $BACKUP_DIR"
