@@ -134,7 +134,7 @@ export async function startRecorder(camera: CameraConfig, restarts: number): Pro
       '-f', 'hls',
       '-hls_time', String(config.segmentDuration),
       '-hls_list_size', String(config.liveWindow),
-      '-hls_flags', writesNodeArchive ? 'temp_file+program_date_time+omit_endlist+independent_segments' : 'temp_file+program_date_time+omitendlist+independent_segments+delete_segments'.replace('omitendlist', 'omit_endlist'),
+      '-hls_flags', writesNodeArchive ? 'temp_file+program_date_time+omit_endlist+independent_segments' : 'temp_file+program_date_time+omit_endlist+independent_segments+delete_segments',
       ...(writesNodeArchive ? ['-strftime', '1', '-strftime_mkdir', '1'] : ['-hls_delete_threshold', '2']),
       '-hls_segment_filename', segmentPattern,
       livePlaylist
