@@ -26,10 +26,21 @@ path = Path(sys.argv[1])
 node_url = sys.argv[2].rstrip('/')
 text = path.read_text()
 
-# Normalize malformed adjacency created by older repair attempts.
+# Fix malformed snippets left by older nginx camera-route patch attempts.
+# Example observed on production master:
+#   # Frontend camera pages like /cameras/<uuid> must fall through to the SPA.location /cameras/ {
+#       try_files $uri $uri/ /index.html;
+#   }# BEGIN newdomofon-smartyard-origin-fix
+text = text.replace(
+    '# Frontend camera pages like /cameras/<uuid> must fall through to the SPA.location /cameras/ {',
+    '# Frontend camera pages like /cameras/<uuid> must fall through to the SPA.\n    location /cameras/ {'
+)
+text = re.sub(r'}\s*# BEGIN newdomofon-smartyard-origin-fix', '}\n\n    # BEGIN newdomofon-smartyard-origin-fix', text)
+
+# Normalize malformed adjacency created by previous repair attempts.
 text = re.sub(r'}\s*location', '}\n    location', text)
 
-# Remove all marked generated blocks first.
+# Remove all marked generated media proxy blocks first.
 text = re.sub(
     r'\n?\s*# BEGIN NEWDOMOFON NODE MEDIA PROXY\n[\s\S]*?\n\s*# END NEWDOMOFON NODE MEDIA PROXY\n?',
     '\n',
@@ -37,10 +48,10 @@ text = re.sub(
 )
 
 # Remove every explicit media location block we created in previous attempts.
-# This is intentionally broad for these three paths. The SPA uses `location /`,
-# not explicit `/cameras/`, so Vue routes are preserved.
+# Keep `location /cameras/ { try_files ... }` for SPA camera pages.
 location_start = re.compile(
-    r'\n\s*location\s+(?:\^~\s+|~\s+)?(?:\^)?/(?:cameras|files|device-archive)(?:/|[^\{]*)\{',
+    r'\n\s*location\s+(?:\^~\s+|~\s+)?(?:\^)?/(?:files|device-archive)(?:/|[^\{]*)\{'
+    r'|\n\s*location\s+~\s+\^/cameras/[^\{]*\{',
     re.M,
 )
 
