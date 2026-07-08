@@ -65,7 +65,15 @@ systemctl enable --now newdomofon-public-events-proxy
 if [[ -f /etc/systemd/system/newdomofon-smartyard-compat.service ]]; then
   systemctl enable --now newdomofon-smartyard-compat
 fi
+
+# Strict master/node deployment rule: master must not record cameras.
+# A stale DVR service on the master can open RTSP/ONVIF sessions and compete
+# with the assigned video node, causing live stalls and duplicate collectors.
+if systemctl list-unit-files newdomofon-video-dvr.service >/dev/null 2>&1 || systemctl status newdomofon-video-dvr.service >/dev/null 2>&1; then
+  systemctl disable --now newdomofon-video-dvr.service || true
+fi
+
 nginx -t
 systemctl reload nginx
 
-echo "Master deployed."
+echo "Master deployed. DVR service is disabled on strict master deployments."
