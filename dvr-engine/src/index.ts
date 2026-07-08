@@ -17,6 +17,7 @@ import { startOnvifEventCollectorV2 } from './onvifEventsV2.js';
 import { startOnvifLegacyFallbackCollector } from './onvifEventsLegacyFallback.js';
 import { startHikvisionEventCollector } from './hikvisionEvents.js';
 import { startDeviceArchiveIndexer } from './deviceArchiveIndexer.js';
+import { startVideoMotionDetector, stopAllVideoMotionDetectors } from './videoMotionDetector.js';
 import { registerArchiveExportRoute } from './archiveExport.js';
 import { requireMediaToken, rewritePlaylistForNode } from './mediaAuth.js';
 import { heartbeat, isNodeMode, pollCommands } from './nodeClient.js';
@@ -237,7 +238,9 @@ if (isNodeMode()) {
   setInterval(() => heartbeat().catch(console.error), 15_000);
   setInterval(() => pollCommands(reloadCameras, async () => {
     stopAllRecorders();
+    stopAllVideoMotionDetectors();
     await reloadCameras();
+    startVideoMotionDetector();
   }).catch(console.error), 10_000);
 }
 setInterval(() => cleanupArchives().catch(console.error), config.cleanupIntervalMinutes * 60_000);
@@ -248,11 +251,13 @@ startOnvifEventCollectorV2();
 startOnvifLegacyFallbackCollector();
 startHikvisionEventCollector();
 startDeviceArchiveIndexer();
+startVideoMotionDetector();
 const server = app.listen(config.port, () => console.log(`DVR engine listening on ${config.port}`));
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}`);
   stopAllRecorders();
+  stopAllVideoMotionDetectors();
   server.close(async () => {
     await pool.end();
     process.exit(0);
