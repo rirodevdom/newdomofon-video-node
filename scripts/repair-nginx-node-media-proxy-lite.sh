@@ -21,35 +21,39 @@ python3 - "$SITE_CONF" "$NODE_DVR_URL" <<'PY'
 from pathlib import Path
 import re
 import sys
-from urllib.parse import urlparse
 
 path = Path(sys.argv[1])
 node_url = sys.argv[2].rstrip('/')
-node_host = urlparse(node_url).hostname or '10.106.1.31'
 text = path.read_text()
 
-# Fix broken adjacency left by previous repair attempts: `}location ...`.
+# Normalize malformed adjacency created by older repair attempts.
 text = re.sub(r'}\s*location', '}\n    location', text)
 
-# Remove generated marker blocks first.
+# Remove all marked generated blocks first.
 text = re.sub(
     r'\n?\s*# BEGIN NEWDOMOFON NODE MEDIA PROXY\n[\s\S]*?\n\s*# END NEWDOMOFON NODE MEDIA PROXY\n?',
     '\n',
     text,
 )
 
+# Remove every explicit media location block we created in previous attempts.
+# This is intentionally broad for these three paths. The SPA uses `location /`,
+# not explicit `/cameras/`, so Vue routes are preserved.
 location_start = re.compile(
     r'\n\s*location\s+(?:\^~\s+|~\s+)?(?:\^)?/(?:cameras|files|device-archive)(?:/|[^\{]*)\{',
     re.M,
 )
 
 def find_block_end(src: str, brace_pos: int) -> int:
+    if brace_pos < 0:
+        return -1
     depth = 0
     i = brace_pos
     while i < len(src):
-        if src[i] == '{':
+        ch = src[i]
+        if ch == '{':
             depth += 1
-        elif src[i] == '}':
+        elif ch == '}':
             depth -= 1
             if depth == 0:
                 i += 1
@@ -59,7 +63,6 @@ def find_block_end(src: str, brace_pos: int) -> int:
         i += 1
     return len(src)
 
-# Remove any old media location that proxies to the video node, with or without :3010.
 out = []
 pos = 0
 while True:
@@ -69,13 +72,8 @@ while True:
         break
     out.append(text[pos:m.start()])
     brace = text.find('{', m.end() - 1)
-    end = find_block_end(text, brace) if brace >= 0 else m.end()
-    block = text[m.start():end]
-    if (node_host in block and 'proxy_pass http' in block) or 'NEWDOMOFON NODE MEDIA PROXY' in block:
-        pos = end
-    else:
-        out.append(block)
-        pos = end
+    end = find_block_end(text, brace)
+    pos = end if end >= 0 else m.end()
 text = ''.join(out)
 text = re.sub(r'\n{4,}', '\n\n\n', text)
 
