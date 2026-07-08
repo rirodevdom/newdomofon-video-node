@@ -128,7 +128,7 @@ source = source.replace(
     const events = mapped.events;
 
     if (mapped.ignoredInitialized && config.detailLog && (!session.lastLogAt || now - session.lastLogAt > config.quietLogMs)) {
-      console.log(\`[onvif-events:v2] ${camera.stream_name} ignored initialized snapshots: count=${mapped.ignoredInitialized}\`);
+      console.log('[onvif-events:v2] ' + camera.stream_name + ' ignored initialized snapshots: count=' + mapped.ignoredInitialized);
     }
 
     markOk(session);`
@@ -143,7 +143,7 @@ source = source.replace(
       });`,
   `      if (config.detailLog) {
         const samples = events.slice(0, 8).map(eventDebugSample);
-        console.log(\`[onvif-events:v2] ${camera.stream_name} stored events: events=${events.length} inserted=${inserted} lastEventAt=${session.lastEventAt} samples=${JSON.stringify(samples)}\`);
+        console.log('[onvif-events:v2] ' + camera.stream_name + ' stored events: events=' + events.length + ' inserted=' + inserted + ' lastEventAt=' + session.lastEventAt + ' samples=' + JSON.stringify(samples));
       } else {
         console.log('[onvif-events:v2] stored events', {
           stream_name: camera.stream_name,
