@@ -8,7 +8,15 @@ function intEnv(name: string, fallback: number): number {
   return parsed;
 }
 
+function engineRole(): 'master' | 'node' | 'standalone' {
+  const raw = String(process.env.DVR_ENGINE_ROLE || process.env.VIDEO_ENGINE_ROLE || '').trim().toLowerCase();
+  if (raw === 'master' || raw === 'node' || raw === 'standalone') return raw;
+  if (process.env.DVR_MASTER_URL && process.env.DVR_NODE_ID && process.env.DVR_NODE_TOKEN) return 'node';
+  return 'standalone';
+}
+
 export const config = {
+  role: engineRole(),
   port: intEnv('DVR_ENGINE_PORT', 3010),
   databaseUrl: process.env.DATABASE_URL || 'postgres://newdomofon:newdomofon_password@127.0.0.1:5432/newdomofon_video',
   dvrRoot: process.env.DVR_ROOT || '/var/lib/newdomofon-video/dvr',
