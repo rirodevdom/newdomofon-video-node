@@ -15,6 +15,28 @@ interface RecorderState {
 }
 
 const recorders = new Map<string, RecorderState>();
+const restartTimers = new Map<string, NodeJS.Timeout>();
+
+function clearRestartTimer(streamName: string) {
+  const timer = restartTimers.get(streamName);
+  if (!timer) return;
+  clearTimeout(timer);
+  restartTimers.delete(streamName);
+}
+
+function scheduleRecorderRestart(camera: CameraConfig, restarts: number) {
+  clearRestartTimer(camera.stream_name);
+
+  const delay = Math.min(30_000, 2000 + restarts * 1000);
+  const timer = setTimeout(() => {
+    restartTimers.delete(camera.stream_name);
+    if (recorders.has(camera.stream_name)) return;
+    startRecorder(camera, restarts + 1).catch(console.error);
+  }, delay);
+
+  timer.unref?.();
+  restartTimers.set(camera.stream_name, timer);
+}
 
 export function getRecorderStatus(streamName: string) {
   const state = recorders.get(streamName);
@@ -73,6 +95,9 @@ export async function reloadCameras(): Promise<void> {
 }
 
 export async function startRecorder(camera: CameraConfig, restarts: number): Promise<void> {
+  if (recorders.has(camera.stream_name)) return;
+  clearRestartTimer(camera.stream_name);
+
   await ensureStreamDirs(camera.stream_name);
   const root = streamRoot(camera.stream_name);
   const writesNodeArchive = (camera.archive_storage || 'node') !== 'device';
@@ -109,7 +134,7 @@ export async function startRecorder(camera: CameraConfig, restarts: number): Pro
       '-f', 'hls',
       '-hls_time', String(config.segmentDuration),
       '-hls_list_size', String(config.liveWindow),
-      '-hls_flags', writesNodeArchive ? 'temp_file+program_date_time+omit_endlist+independent_segments' : 'temp_file+program_date_time+omit_endlist+independent_segments+delete_segments',
+      '-hls_flags', writesNodeArchive ? 'temp_file+program_date_time+omit_endlist+independent_segments' : 'temp_file+program_date_time+omitendlist+independent_segments+delete_segments'.replace('omitendlist', 'omit_endlist'),
       ...(writesNodeArchive ? ['-strftime', '1', '-strftime_mkdir', '1'] : ['-hls_delete_threshold', '2']),
       '-hls_segment_filename', segmentPattern,
       livePlaylist
@@ -131,11 +156,12 @@ export async function startRecorder(camera: CameraConfig, restarts: number): Pro
     if (current?.process.pid !== child.pid) return;
     recorders.delete(camera.stream_name);
     console.warn(`Recorder ${camera.stream_name} exited code=${code} signal=${signal}`);
-    setTimeout(() => startRecorder(camera, restarts + 1).catch(console.error), Math.min(30_000, 2000 + restarts * 1000));
+    scheduleRecorderRestart(camera, restarts + 1);
   });
 }
 
 export function stopRecorder(streamName: string, reason: string): void {
+  clearRestartTimer(streamName);
   const state = recorders.get(streamName);
   if (!state) return;
   console.log(`Stopping recorder ${streamName}: ${reason}`);
@@ -144,5 +170,6 @@ export function stopRecorder(streamName: string, reason: string): void {
 }
 
 export function stopAllRecorders(): void {
+  for (const streamName of Array.from(restartTimers.keys())) clearRestartTimer(streamName);
   for (const streamName of Array.from(recorders.keys())) stopRecorder(streamName, 'shutdown');
 }
