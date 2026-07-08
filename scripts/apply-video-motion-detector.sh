@@ -5,6 +5,7 @@ PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/rirodevdom/newdomofon-video/main}"
 STREAMS="${VIDEO_MOTION_STREAMS:-${DVR_VIDEO_MOTION_STREAMS:-onvif2}}"
+SOURCE="${VIDEO_MOTION_SOURCE:-${DVR_VIDEO_MOTION_SOURCE:-hls}}"
 THRESHOLD="${VIDEO_MOTION_SCENE_THRESHOLD:-0.010}"
 END_IDLE_MS="${VIDEO_MOTION_END_IDLE_MS:-7000}"
 FPS="${VIDEO_MOTION_FPS:-3}"
@@ -23,7 +24,8 @@ install -d -m 0750 "$BACKUP_DIR" "$PROJECT_DIR/dvr-engine/src" "$(dirname "$ENV_
 for path in \
   dvr-engine/src/videoMotionDetector.ts \
   dvr-engine/src/index.ts \
-  dvr-engine/src/nodeClient.ts
+  dvr-engine/src/nodeClient.ts \
+  dvr-engine/src/recorder.ts
   do
     if [[ -f "$PROJECT_DIR/$path" ]]; then
       cp -a "$PROJECT_DIR/$path" "$BACKUP_DIR/$(basename "$path").bak"
@@ -38,13 +40,14 @@ touch "$ENV_FILE"
 chmod 0640 "$ENV_FILE" || true
 cp -a "$ENV_FILE" "$BACKUP_DIR/app.env.bak" 2>/dev/null || true
 
-node - "$ENV_FILE" "$STREAMS" "$THRESHOLD" "$END_IDLE_MS" "$FPS" "$SCALE_WIDTH" "$MAX_DETECTORS" <<'NODE'
+node - "$ENV_FILE" "$STREAMS" "$SOURCE" "$THRESHOLD" "$END_IDLE_MS" "$FPS" "$SCALE_WIDTH" "$MAX_DETECTORS" <<'NODE'
 const fs = require('fs');
-const [file, streams, threshold, endIdleMs, fps, scaleWidth, maxDetectors] = process.argv.slice(2);
+const [file, streams, source, threshold, endIdleMs, fps, scaleWidth, maxDetectors] = process.argv.slice(2);
 let lines = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\r?\n/) : [];
 const managed = new Set([
   'VIDEO_MOTION_ENABLED',
   'VIDEO_MOTION_STREAMS',
+  'VIDEO_MOTION_SOURCE',
   'VIDEO_MOTION_SCENE_THRESHOLD',
   'VIDEO_MOTION_END_IDLE_MS',
   'VIDEO_MOTION_FPS',
@@ -61,6 +64,7 @@ function setValue(key, value) {
 }
 setValue('VIDEO_MOTION_ENABLED', 'true');
 setValue('VIDEO_MOTION_STREAMS', streams || 'onvif2');
+setValue('VIDEO_MOTION_SOURCE', String(source || 'hls').toLowerCase() === 'rtsp' ? 'rtsp' : 'hls');
 setValue('VIDEO_MOTION_SCENE_THRESHOLD', threshold || '0.010');
 setValue('VIDEO_MOTION_END_IDLE_MS', endIdleMs || '7000');
 setValue('VIDEO_MOTION_FPS', fps || '3');
@@ -85,7 +89,7 @@ systemctl restart newdomofon-video-dvr.service
 sleep 2
 
 echo "Video motion env:"
-grep -E '^(VIDEO_MOTION_ENABLED|VIDEO_MOTION_STREAMS|VIDEO_MOTION_SCENE_THRESHOLD|VIDEO_MOTION_END_IDLE_MS|VIDEO_MOTION_FPS|VIDEO_MOTION_SCALE_WIDTH|VIDEO_MOTION_MAX_DETECTORS|VIDEO_MOTION_EVENT_TYPE)=' "$ENV_FILE" || true
+grep -E '^(VIDEO_MOTION_ENABLED|VIDEO_MOTION_STREAMS|VIDEO_MOTION_SOURCE|VIDEO_MOTION_SCENE_THRESHOLD|VIDEO_MOTION_END_IDLE_MS|VIDEO_MOTION_FPS|VIDEO_MOTION_SCALE_WIDTH|VIDEO_MOTION_MAX_DETECTORS|VIDEO_MOTION_EVENT_TYPE)=' "$ENV_FILE" || true
 
 echo
 echo "Recent logs:"
