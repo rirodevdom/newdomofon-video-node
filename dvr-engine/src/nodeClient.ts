@@ -1,6 +1,7 @@
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import { config } from './config.js';
+import { getLocalEventStoreHealth } from './localEventStore.js';
 import type { CameraConfig } from './types.js';
 
 let cachedCameras: CameraConfig[] = [];
@@ -15,10 +16,15 @@ export function getNodeMediaSecret(): string {
   return mediaSecret;
 }
 
+export function getCachedAssignedCameras(): CameraConfig[] {
+  return cachedCameras;
+}
+
 function headers(): Record<string, string> {
   return {
     authorization: `Bearer ${config.nodeToken}`,
     'x-node-id': config.nodeId,
+    'x-node-protocol-version': '1',
     'content-type': 'application/json'
   };
 }
@@ -26,7 +32,7 @@ function headers(): Record<string, string> {
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${config.masterUrl}${path}`, {
     ...init,
-    headers: headers()
+    headers: { ...headers(), ...((init.headers || {}) as Record<string, string>) }
   });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
@@ -51,7 +57,9 @@ async function storageStatus() {
 
 export async function heartbeat(): Promise<void> {
   if (!isNodeMode()) return;
+  const eventStore = getLocalEventStoreHealth();
   const body = {
+    protocol_version: 1,
     public_base_url: config.nodePublicBaseUrl || undefined,
     internal_url: config.nodeInternalUrl || undefined,
     version: process.env.npm_package_version || '1.0.0',
@@ -60,8 +68,12 @@ export async function heartbeat(): Promise<void> {
       hls: true,
       archive: true,
       export: true,
-      onvif_events: Boolean(process.env.INTERNAL_DVR_SECRET),
-      video_motion: ['1', 'true', 'yes', 'on'].includes(String(process.env.VIDEO_MOTION_ENABLED || process.env.DVR_VIDEO_MOTION_ENABLED || '').toLowerCase())
+      onvif_events: true,
+      event_storage: 'local-sqlite',
+      events: eventStore,
+      video_motion: ['1', 'true', 'yes', 'on'].includes(
+        String(process.env.VIDEO_MOTION_ENABLED || process.env.DVR_VIDEO_MOTION_ENABLED || '').toLowerCase()
+      )
     },
     storage: await storageStatus()
   };
@@ -86,9 +98,15 @@ export async function loadAssignedCameras(): Promise<CameraConfig[]> {
   return cachedCameras;
 }
 
-export async function pollCommands(onReload: () => Promise<void>, onRestartRecordings?: () => Promise<void>): Promise<void> {
+export async function pollCommands(
+  onReload: () => Promise<void>,
+  onRestartRecordings?: () => Promise<void>
+): Promise<void> {
   if (!isNodeMode()) return;
-  const data = await requestJson<{ items?: Array<{ id: string; type: string; payload: unknown }> }>('/api/node-agent/commands');
+  const data = await requestJson<{
+    items?: Array<{ id: string; type: string; payload: unknown }>;
+  }>('/api/node-agent/commands');
+
   for (const command of data.items || []) {
     try {
       if (command.type === 'reload_cameras') await onReload();
@@ -100,13 +118,22 @@ export async function pollCommands(onReload: () => Promise<void>, onRestartRecor
         method: 'POST',
         body: JSON.stringify({
           status: 'done',
-          result: { ok: true, type: command.type, config_generation: configGeneration, storage: await storageStatus() }
+          result: {
+            ok: true,
+            type: command.type,
+            config_generation: configGeneration,
+            storage: await storageStatus(),
+            events: getLocalEventStoreHealth()
+          }
         })
       });
     } catch (error) {
       await requestJson(`/api/node-agent/commands/${encodeURIComponent(command.id)}/result`, {
         method: 'POST',
-        body: JSON.stringify({ status: 'failed', result: { error: error instanceof Error ? error.message : String(error) } })
+        body: JSON.stringify({
+          status: 'failed',
+          result: { error: error instanceof Error ? error.message : String(error) }
+        })
       }).catch(() => undefined);
     }
   }
