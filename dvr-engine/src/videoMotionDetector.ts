@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { query } from './db.js';
 import { isNodeMode, loadAssignedCameras } from './nodeClient.js';
 import { streamRoot } from './storage.js';
+import { appendLocalEvent } from './localEventStore.js';
 import type { CameraConfig } from './types.js';
 
 const VERSION = 'v2-hls-scene-motion';
@@ -25,9 +26,6 @@ interface DetectorState {
 
 interface DetectorConfig {
   enabled: boolean;
-  backendUrl: string;
-  secret: string;
-  nodeId: string;
   streams: Set<string>;
   allStreams: boolean;
   fps: number;
@@ -70,9 +68,6 @@ function cfg(): DetectorConfig {
 
   return {
     enabled: boolEnv('VIDEO_MOTION_ENABLED', streams.size > 0),
-    backendUrl: (process.env.BACKEND_INTERNAL_URL || process.env.BACKEND_URL || process.env.API_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, ''),
-    secret: process.env.INTERNAL_DVR_SECRET || '',
-    nodeId: config.nodeId,
     streams,
     allStreams,
     fps: numEnv('VIDEO_MOTION_FPS', 3, 0.2, 15),
@@ -144,45 +139,33 @@ async function loadCameras(): Promise<CameraConfig[]> {
 async function postEvent(camera: CameraConfig, active: boolean, score: number, frame: Record<string, string>) {
   const configValue = cfg();
   const occurredAt = nowIso();
-  const response = await fetch(`${configValue.backendUrl}/api/internal/events/onvif`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-internal-secret': configValue.secret,
-      'x-node-id': configValue.nodeId
-    },
-    body: JSON.stringify({
-      camera_id: camera.id,
-      stream_name: camera.stream_name,
-      event_type: configValue.eventType,
-      event_state: active ? 'true' : 'false',
-      topic: configValue.eventType,
-      source_name: 'ffmpeg-scene',
-      occurred_at: occurredAt,
-      data: {
-        simple: {
-          IsMotion: active ? 'true' : 'false',
-          SceneScore: String(score),
-          Threshold: String(configValue.threshold)
-        },
-        detector: 'ffmpeg-scene',
-        version: VERSION,
-        score,
-        threshold: configValue.threshold,
-        fps: configValue.fps,
-        scale_width: configValue.scaleWidth,
-        end_idle_ms: configValue.endIdleMs,
-        source: configValue.source,
-        frame
-      }
-    })
+  const result = appendLocalEvent({
+    camera_id: camera.id,
+    stream_name: camera.stream_name,
+    event_type: configValue.eventType,
+    event_state: active ? 'true' : 'false',
+    topic: configValue.eventType,
+    source_name: 'ffmpeg-scene',
+    occurred_at: occurredAt,
+    data: {
+      simple: {
+        IsMotion: active ? 'true' : 'false',
+        SceneScore: String(score),
+        Threshold: String(configValue.threshold)
+      },
+      detector: 'ffmpeg-scene',
+      version: VERSION,
+      score,
+      threshold: configValue.threshold,
+      fps: configValue.fps,
+      scale_width: configValue.scaleWidth,
+      end_idle_ms: configValue.endIdleMs,
+      source: configValue.source,
+      frame
+    }
   });
 
-  if (!response.ok) {
-    throw new Error(`Backend POST video motion event HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  }
-
-  return response.json() as Promise<{ ok?: boolean; inserted?: boolean }>;
+  return { ok: true, inserted: result.inserted };
 }
 
 function parseMetadataLine(line: string, frame: Record<string, string>) {
@@ -368,11 +351,6 @@ async function syncDetectors() {
       return;
     }
 
-    if (!configValue.secret) {
-      console.warn('[video-motion] INTERNAL_DVR_SECRET empty, detector disabled');
-      return;
-    }
-
     const cameras = (await loadCameras())
       .filter((camera) => camera.is_enabled !== false)
       .filter((camera) => camera.source_url)
@@ -411,11 +389,6 @@ export function startVideoMotionDetector() {
   const configValue = cfg();
   if (!configValue.enabled) {
     console.log('[video-motion] disabled', { version: VERSION });
-    return;
-  }
-
-  if (!configValue.secret) {
-    console.warn('[video-motion] INTERNAL_DVR_SECRET empty, detector disabled');
     return;
   }
 
