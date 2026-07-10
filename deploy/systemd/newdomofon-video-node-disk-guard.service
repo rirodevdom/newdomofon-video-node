@@ -8,6 +8,7 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=-/etc/newdomofon-video/app.env
+ExecStartPre=/usr/local/sbin/newdomofon-node-system-disk-check
 ExecStart=/usr/local/sbin/newdomofon-node-disk-guard
 Nice=10
 IOSchedulingClass=idle
