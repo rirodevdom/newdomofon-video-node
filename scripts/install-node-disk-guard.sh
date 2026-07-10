@@ -12,6 +12,10 @@ install -m 0755 \
   "$PROJECT_DIR/scripts/node-disk-guard.sh" \
   /usr/local/sbin/newdomofon-node-disk-guard
 
+install -m 0755 \
+  "$PROJECT_DIR/scripts/node-system-disk-check.sh" \
+  /usr/local/sbin/newdomofon-node-system-disk-check
+
 install -m 0644 \
   "$PROJECT_DIR/deploy/systemd/newdomofon-video-node-disk-guard.service" \
   /etc/systemd/system/newdomofon-video-node-disk-guard.service
@@ -30,7 +34,8 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now newdomofon-video-node-disk-guard.timer
-systemctl start newdomofon-video-node-disk-guard.service
+# A critical result intentionally makes the oneshot non-zero; the timer remains active.
+systemctl start newdomofon-video-node-disk-guard.service || true
 
 systemctl --no-pager --full status newdomofon-video-node-disk-guard.timer || true
 cat /run/newdomofon-video/node-disk-state.json 2>/dev/null || true
