@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
-import { config } from './config.js';
+import { appendLocalEvent } from './localEventStore.js';
+import { loadAssignedCameras } from './nodeClient.js';
+import type { CameraConfig } from './types.js';
 
 interface HikCamera {
   id: string;
@@ -29,26 +31,6 @@ const sessions = new Map<string, DeviceSession>();
 
 function enabled(): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env.DVR_HIKVISION_EVENTS_ENABLED || '').toLowerCase());
-}
-
-function backendHeaders() {
-  return {
-    'content-type': 'application/json',
-    'x-internal-secret': process.env.INTERNAL_DVR_SECRET || '',
-    'x-node-id': config.nodeId
-  };
-}
-
-async function backendJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${config.masterUrl}${path}`, {
-    ...init,
-    headers: { ...backendHeaders(), ...((init.headers || {}) as Record<string, string>) }
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Master ${path} failed: ${response.status} ${text.slice(0, 500)}`);
-  }
-  return await response.json() as T;
 }
 
 function md5(value: string) {
@@ -136,16 +118,15 @@ function findText(value: unknown, keys: string[]): string {
 }
 
 async function storeEvent(camera: HikCamera, event: Record<string, unknown>) {
-  await backendJson('/api/internal/events/onvif', {
-    method: 'POST',
-    body: JSON.stringify({
-      camera_id: camera.id,
-      stream_name: camera.stream_name,
-      event_type: String(event.eventType || event.topic || 'hikvision.event'),
-      event_state: event.eventState ? String(event.eventState) : null,
-      occurred_at: String(event.dateTime || new Date().toISOString()),
-      data: event
-    })
+  return appendLocalEvent({
+    camera_id: camera.id,
+    stream_name: camera.stream_name,
+    event_type: String(event.eventType || event.topic || 'hikvision.event'),
+    event_state: event.eventState ? String(event.eventState) : null,
+    topic: String(event.eventType || event.topic || 'hikvision.event'),
+    source_name: 'hikvision.alertStream',
+    occurred_at: String(event.dateTime || new Date().toISOString()),
+    data: event
   });
 }
 
@@ -196,10 +177,42 @@ async function runDevice(device: HikDevice, abort: AbortController) {
   }
 }
 
+function buildAssignedDevices(cameras: CameraConfig[]): HikDevice[] {
+  const devices = new Map<string, HikDevice>();
+
+  for (const camera of cameras) {
+    if (camera.is_enabled === false) continue;
+    if (String(camera.device_connection_type || '').toUpperCase() !== 'HIKVISION') continue;
+    if (!camera.device_id || !camera.device_host) continue;
+
+    let device = devices.get(camera.device_id);
+    if (!device) {
+      device = {
+        id: camera.device_id,
+        name: String(camera.device_host),
+        host: camera.device_host,
+        port: Number(camera.device_port || 80),
+        username: String(camera.device_username || ''),
+        password: String(camera.device_password || ''),
+        cameras: []
+      };
+      devices.set(camera.device_id, device);
+    }
+
+    device.cameras.push({
+      id: camera.id,
+      name: camera.name,
+      stream_name: camera.stream_name,
+      source_url: camera.source_url
+    });
+  }
+
+  return Array.from(devices.values());
+}
+
 async function syncDevices() {
-  if (!enabled() || !config.masterUrl || !process.env.INTERNAL_DVR_SECRET) return;
-  const data = await backendJson<{ items?: HikDevice[] }>('/api/internal/devices/hikvision');
-  const devices = data.items || [];
+  if (!enabled()) return;
+  const devices = buildAssignedDevices(await loadAssignedCameras());
   const wanted = new Set(devices.map((device) => device.id));
 
   for (const [id, session] of sessions) {

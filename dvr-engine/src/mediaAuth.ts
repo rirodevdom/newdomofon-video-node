@@ -53,7 +53,7 @@ function rewritePermanentMediaToken(token: any): string | null {
   }
 }
 
-type Scope = 'camera' | 'live' | 'archive' | 'export' | 'file' | 'status';
+type Scope = 'camera' | 'live' | 'archive' | 'export' | 'file' | 'status' | 'events';
 
 const cameraScopeTargets: Scope[] = ['live', 'archive', 'file', 'status'];
 
@@ -92,11 +92,9 @@ function verifyToken(rawToken: string, streamName: string, allowedScopes: Scope[
   const exp = Number(payload.exp);
   if (Number.isFinite(exp)) {
     if (exp < Math.floor(Date.now() / 1000)) return false;
-  } else if (!permanentMediaLinksEnabled()) {
+  } else if (!allowPermanentNoExpMediaToken(payload)) {
     return false;
   }
-  const requiredVersion = permanentMediaLinkVersion();
-  if (permanentMediaLinksEnabled() && requiredVersion && String(payload.link_version || '') !== requiredVersion) return false;
   return true;
 }
 
