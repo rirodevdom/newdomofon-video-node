@@ -26,7 +26,13 @@ install -d -o newdomofon -g newdomofon -m 0750 \
 
 systemctl daemon-reload
 systemctl enable --now newdomofon-video-archive-event-sync.timer
-systemctl start newdomofon-video-archive-event-sync.service
+
+# A temporary master/network outage must not abort the whole node deploy.
+# The enabled timer will retry automatically on the next interval.
+if ! systemctl start newdomofon-video-archive-event-sync.service; then
+  echo "Archive/event initial reconciliation failed; timer will retry." >&2
+  systemctl --no-pager --full status newdomofon-video-archive-event-sync.service || true
+fi
 
 systemctl --no-pager --full status newdomofon-video-archive-event-sync.timer || true
 cat /var/lib/newdomofon-video/events/archive-event-sync-state.json 2>/dev/null || true
