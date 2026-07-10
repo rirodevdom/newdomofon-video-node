@@ -1,0 +1,21 @@
+[Unit]
+Description=NewDomofon archive and event lifecycle synchronizer
+Documentation=file:/opt/newdomofon-video-node/docs/ARCHIVE_EVENT_LIFECYCLE.md
+After=network-online.target newdomofon-video-dvr.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=newdomofon
+Group=newdomofon
+EnvironmentFile=/etc/newdomofon-video/app.env
+ExecStart=/usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs --apply
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=true
+CapabilityBoundingSet=
+AmbientCapabilities=
