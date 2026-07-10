@@ -20,6 +20,15 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 2
 fi
 
+if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
+  NEWDOMOFON_ENV_FILE="$ENV_FILE" bash "$PROJECT_DIR/scripts/node-disk-guard.sh"
+  if [[ -e /run/newdomofon-video/node-disk-paused ]]; then
+    echo "Deployment aborted: node disk guard is critical." >&2
+    cat /run/newdomofon-video/node-disk-state.json >&2 2>/dev/null || true
+    exit 75
+  fi
+fi
+
 cd "$PROJECT_DIR/dvr-engine"
 npm ci --include=dev
 npm run build
@@ -31,11 +40,17 @@ cp "$PROJECT_DIR/deploy/nginx/newdomofon-video-node.conf" /etc/nginx/sites-avail
 ln -sf /etc/nginx/sites-available/newdomofon-video-node.conf /etc/nginx/sites-enabled/newdomofon-video-node.conf
 
 systemctl daemon-reload
-systemctl enable --now newdomofon-video-dvr
+systemctl enable newdomofon-video-dvr
 
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
   PROJECT_DIR="$PROJECT_DIR" INSTALL_JOURNAL_LIMITS="$INSTALL_JOURNAL_LIMITS" \
     bash "$PROJECT_DIR/scripts/install-node-disk-guard.sh"
+fi
+
+if [[ ! -e /run/newdomofon-video/node-disk-paused ]]; then
+  systemctl restart newdomofon-video-dvr
+else
+  echo "DVR remains stopped because disk guard is critical." >&2
 fi
 
 nginx -t
