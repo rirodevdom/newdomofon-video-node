@@ -1,0 +1,21 @@
+[Unit]
+Description=NewDomofon Video Node Disk Guard
+Documentation=file:/opt/newdomofon-video-node/README.md
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/newdomofon-video/app.env
+ExecStart=/usr/local/sbin/newdomofon-node-disk-guard
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/newdomofon-video /var/log/newdomofon-video /run/newdomofon-video /run/lock /tmp /var/tmp
+CapabilityBoundingSet=
+AmbientCapabilities=
