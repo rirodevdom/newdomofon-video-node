@@ -21,7 +21,10 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
-  NEWDOMOFON_ENV_FILE="$ENV_FILE" bash "$PROJECT_DIR/scripts/node-disk-guard.sh"
+  NEWDOMOFON_ENV_FILE="$ENV_FILE" bash "$PROJECT_DIR/scripts/node-system-disk-check.sh" || true
+  if [[ ! -e /run/newdomofon-video/node-disk-paused ]]; then
+    NEWDOMOFON_ENV_FILE="$ENV_FILE" bash "$PROJECT_DIR/scripts/node-disk-guard.sh"
+  fi
   if [[ -e /run/newdomofon-video/node-disk-paused ]]; then
     echo "Deployment aborted: node disk guard is critical." >&2
     cat /run/newdomofon-video/node-disk-state.json >&2 2>/dev/null || true
