@@ -49,7 +49,7 @@ registerLocalEventRoutes(app);
 
 const maxArchiveRangesSeconds = Math.max(config.maxExportSeconds, Number(process.env.DVR_ARCHIVE_RANGES_MAX_SECONDS || 31 * 24 * 60 * 60));
 const maxDeviceArchiveRangesSeconds = Math.max(config.maxExportSeconds, Number(process.env.DVR_DEVICE_ARCHIVE_RANGES_MAX_SECONDS || 31 * 24 * 60 * 60));
-const livePlaylistWaitMs = Math.max(0, Number(process.env.DVR_LIVE_PLAYLIST_WAIT_MS || 3000));
+const livePlaylistWaitMs = Math.max(0, Number(process.env.DVR_LIVE_PLAYLIST_WAIT_MS || 10_000));
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -107,6 +107,12 @@ app.get('/cameras/:streamName/live.m3u8', requireMediaToken(['live']), async (re
     }
 
     const file = path.join(streamRoot(streamName), 'live.m3u8');
+    const beforeReload = getRecorderStatus(streamName);
+    if (!beforeReload.recording) {
+      await reloadCameras().catch((error) => {
+        console.error(`[live:${streamName}] camera reload failed`, error instanceof Error ? error.message : error);
+      });
+    }
 
     if (!(await waitForFile(file, livePlaylistWaitMs))) {
       return res.status(404).json({
