@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 SERVICE="${SERVICE:-newdomofon-video-dvr.service}"
 TARGET="$PROJECT_DIR/dvr-engine/src/onvifEventsV2.ts"
 BACKUP_DIR="$PROJECT_DIR/backups/fix-onvif-v2-ruleengine-ts-shadow-$(date +%Y%m%d-%H%M%S)"
@@ -11,7 +11,7 @@ cp -a "$TARGET" "$BACKUP_DIR/onvifEventsV2.ts.bak"
 
 python3 - <<'PY'
 from pathlib import Path
-p = Path('/opt/newdomofon-video/dvr-engine/src/onvifEventsV2.ts')
+p = Path('/opt/newdomofon-video-node/dvr-engine/src/onvifEventsV2.ts')
 s = p.read_text()
 
 s = s.replace(

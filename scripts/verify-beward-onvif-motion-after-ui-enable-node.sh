@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 STREAMS="${EVENT_STREAMS:-onvif2,onf}"
 SECONDS_TO_LISTEN="${SECONDS_TO_LISTEN:-180}"
 OUT_DIR="${OUT_DIR:-/tmp/newdomofon-beward-onvif-motion-verify-$(date +%Y%m%d-%H%M%S)}"

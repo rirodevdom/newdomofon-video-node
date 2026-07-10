@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 SERVICE="${SERVICE:-newdomofon-video-dvr.service}"
 INDEX="$PROJECT_DIR/dvr-engine/src/index.ts"
 VMOTION="$PROJECT_DIR/dvr-engine/src/videoMotionDetector.ts"

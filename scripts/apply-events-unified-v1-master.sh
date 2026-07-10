@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 PUBLIC_EVENTS_SERVICE="${PUBLIC_EVENTS_SERVICE:-newdomofon-public-events.service}"
 BACKEND_SERVICE="${BACKEND_SERVICE:-newdomofon-video-backend.service}"

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 DVR_SERVICE="${DVR_SERVICE:-newdomofon-video-dvr.service}"
 STREAMS="${EVENT_STREAMS:-onvif2,onf}"
-BACKUP_DIR="/opt/newdomofon-video/backups/enable-real-onvif-events-only-$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="/opt/newdomofon-video-node/backups/enable-real-onvif-events-only-$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$BACKUP_DIR"
 [ -f "$ENV_FILE" ] && cp -a "$ENV_FILE" "$BACKUP_DIR/app.env.bak" || true

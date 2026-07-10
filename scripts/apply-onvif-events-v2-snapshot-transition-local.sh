@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 DVR_FILE="$PROJECT_DIR/dvr-engine/src/onvifEventsV2.ts"
 STAMP="$(date +%Y%m%d-%H%M%S)"

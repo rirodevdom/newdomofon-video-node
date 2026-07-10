@@ -1,18 +1,17 @@
 [Unit]
 Description=NewDomofon Video DVR Engine
-Documentation=file:/opt/newdomofon-video/docs/BAREMETAL_DEBIAN12.md
-After=network-online.target postgresql.service
+Documentation=file:/opt/newdomofon-video-node/docs/BAREMETAL_DEBIAN12.md
+After=network-online.target
 Wants=network-online.target
-Requires=postgresql.service
 
 [Service]
 Type=simple
 User=newdomofon
 Group=newdomofon
-WorkingDirectory=/opt/newdomofon-video/dvr-engine
+WorkingDirectory=/opt/newdomofon-video-node/dvr-engine
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/node /opt/newdomofon-video/dvr-engine/dist/index.js
+ExecStart=/usr/bin/node /opt/newdomofon-video-node/dvr-engine/dist/index.js
 Restart=always
 RestartSec=5
 TimeoutStopSec=45

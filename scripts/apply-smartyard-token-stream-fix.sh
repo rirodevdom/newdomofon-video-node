@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 SERVER_FILE="${SERVER_FILE:-$PROJECT_DIR/smartyard-compat-proxy/server.js}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$PROJECT_DIR/backups/smartyard-token-stream-fix-$STAMP"

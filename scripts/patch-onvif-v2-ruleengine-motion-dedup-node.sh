@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 SERVICE="${SERVICE:-newdomofon-video-dvr.service}"
 TARGET="$PROJECT_DIR/dvr-engine/src/onvifEventsV2.ts"
@@ -14,7 +14,7 @@ cp -a "$ENV_FILE" "$BACKUP_DIR/app.env.bak" 2>/dev/null || true
 python3 - <<'PY'
 from pathlib import Path
 
-p = Path('/opt/newdomofon-video/dvr-engine/src/onvifEventsV2.ts')
+p = Path('/opt/newdomofon-video-node/dvr-engine/src/onvifEventsV2.ts')
 s = p.read_text()
 
 if 'v144-ruleengine-ismotion-dedup' not in s:

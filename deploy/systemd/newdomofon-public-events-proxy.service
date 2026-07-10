@@ -1,6 +1,6 @@
 [Unit]
 Description=NewDomofon Public Events Proxy
-Documentation=file:/opt/newdomofon-video/docs/BAREMETAL_DEBIAN12.md
+Documentation=file:/opt/newdomofon-video-node/docs/BAREMETAL_DEBIAN12.md
 After=network-online.target postgresql.service newdomofon-video-backend.service
 Wants=network-online.target
 Requires=postgresql.service
@@ -9,11 +9,11 @@ Requires=postgresql.service
 Type=simple
 User=newdomofon
 Group=newdomofon
-WorkingDirectory=/opt/newdomofon-video/public-events-proxy
+WorkingDirectory=/opt/newdomofon-video-node/public-events-proxy
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
 Environment=PUBLIC_EVENTS_PORT=3057
-ExecStart=/usr/bin/node /opt/newdomofon-video/public-events-proxy/server.js
+ExecStart=/usr/bin/node /opt/newdomofon-video-node/public-events-proxy/server.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=20

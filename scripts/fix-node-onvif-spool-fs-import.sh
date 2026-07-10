@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 TARGET="$PROJECT_DIR/dvr-engine/src/onvifEventsLegacyFallback.ts"
 SERVICE="${SERVICE:-newdomofon-video-dvr.service}"
 BACKUP_DIR="$PROJECT_DIR/backups/fix-node-onvif-spool-fs-import-$(date +%Y%m%d-%H%M%S)"
@@ -11,7 +11,7 @@ cp -a "$TARGET" "$BACKUP_DIR/onvifEventsLegacyFallback.ts.bak"
 
 python3 - <<'PY'
 from pathlib import Path
-p = Path('/opt/newdomofon-video/dvr-engine/src/onvifEventsLegacyFallback.ts')
+p = Path('/opt/newdomofon-video-node/dvr-engine/src/onvifEventsLegacyFallback.ts')
 s = p.read_text()
 if "import fs from 'node:fs/promises';" not in s:
     if "import crypto from 'node:crypto';" in s:

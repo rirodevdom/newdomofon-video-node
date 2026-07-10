@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 TARGET="$PROJECT_DIR/dvr-engine/src/nodeClient.ts"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 SERVICE="${SERVICE:-newdomofon-video-dvr.service}"

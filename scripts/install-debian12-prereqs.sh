@@ -14,7 +14,7 @@ if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.spl
   apt-get install -y nodejs
 fi
 
-id newdomofon >/dev/null 2>&1 || useradd --system --home /opt/newdomofon-video --shell /usr/sbin/nologin newdomofon
+id newdomofon >/dev/null 2>&1 || useradd --system --home /opt/newdomofon-video-node --shell /usr/sbin/nologin newdomofon
 install -d -o newdomofon -g newdomofon /var/lib/newdomofon-video/dvr /var/log/newdomofon-video /var/www/newdomofon-video
 install -d -m 0750 /etc/newdomofon-video
 

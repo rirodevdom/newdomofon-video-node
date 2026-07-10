@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/newdomofon-video.conf}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -52,7 +52,7 @@ write_service_units() {
   cat >/etc/systemd/system/newdomofon-public-events-proxy.service <<'UNIT'
 [Unit]
 Description=NewDomofon Public Events Proxy
-Documentation=file:/opt/newdomofon-video/docs/BAREMETAL_DEBIAN12.md
+Documentation=file:/opt/newdomofon-video-node/docs/BAREMETAL_DEBIAN12.md
 After=network-online.target postgresql.service newdomofon-video-backend.service
 Wants=network-online.target
 Requires=postgresql.service
@@ -61,11 +61,11 @@ Requires=postgresql.service
 Type=simple
 User=newdomofon
 Group=newdomofon
-WorkingDirectory=/opt/newdomofon-video/public-events-proxy
+WorkingDirectory=/opt/newdomofon-video-node/public-events-proxy
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
 Environment=PUBLIC_EVENTS_PORT=3057
-ExecStart=/usr/bin/node /opt/newdomofon-video/public-events-proxy/server.js
+ExecStart=/usr/bin/node /opt/newdomofon-video-node/public-events-proxy/server.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
@@ -88,7 +88,7 @@ UNIT
   cat >/etc/systemd/system/newdomofon-smartyard-compat.service <<'UNIT'
 [Unit]
 Description=NewDomofon SmartYard Compatibility Proxy
-Documentation=file:/opt/newdomofon-video/docs/BAREMETAL_DEBIAN12.md
+Documentation=file:/opt/newdomofon-video-node/docs/BAREMETAL_DEBIAN12.md
 After=network-online.target newdomofon-video-dvr.service
 Wants=network-online.target
 
@@ -96,12 +96,12 @@ Wants=network-online.target
 Type=simple
 User=newdomofon
 Group=newdomofon
-WorkingDirectory=/opt/newdomofon-video/smartyard-compat-proxy
+WorkingDirectory=/opt/newdomofon-video-node/smartyard-compat-proxy
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
 Environment=SMARTYARD_COMPAT_PORT=3082
 Environment=DVR_ENGINE_URL=http://127.0.0.1:3010
-ExecStart=/usr/bin/node /opt/newdomofon-video/smartyard-compat-proxy/server.js
+ExecStart=/usr/bin/node /opt/newdomofon-video-node/smartyard-compat-proxy/server.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=20

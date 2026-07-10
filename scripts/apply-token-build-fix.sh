@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 TOKENS_FILE="$PROJECT_DIR/backend/src/routes/tokens.ts"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$PROJECT_DIR/backups/token-build-fix-$STAMP"

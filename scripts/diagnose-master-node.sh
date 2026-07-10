@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 OUT_DIR="${OUT_DIR:-$PROJECT_DIR/diagnostics}"
 STAMP="$(date +%Y%m%d-%H%M%S)"

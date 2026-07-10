@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 TARGET="$PROJECT_DIR/smartyard-compat-proxy/server.js"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 BACKUP_DIR="$PROJECT_DIR/backups/smartyard-compat-node-archive-source-$(date +%Y%m%d-%H%M%S)"

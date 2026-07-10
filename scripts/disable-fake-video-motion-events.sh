@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 SERVICE="${SERVICE:-newdomofon-video-motion-events.service}"
-BACKUP_DIR="/opt/newdomofon-video/backups/disable-fake-video-motion-events-$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="/opt/newdomofon-video-node/backups/disable-fake-video-motion-events-$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$BACKUP_DIR"
 [ -f "$ENV_FILE" ] && cp -a "$ENV_FILE" "$BACKUP_DIR/app.env.bak" || true

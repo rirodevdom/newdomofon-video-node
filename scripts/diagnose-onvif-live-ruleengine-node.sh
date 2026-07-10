@@ -33,7 +33,7 @@ cat > "$JS_FILE" <<'JS'
 'use strict';
 const fs = require('fs');
 const crypto = require('crypto');
-const { XMLParser } = require('/opt/newdomofon-video/dvr-engine/node_modules/fast-xml-parser');
+const { XMLParser } = require('/opt/newdomofon-video-node/dvr-engine/node_modules/fast-xml-parser');
 const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', textNodeName:'#text', removeNSPrefix:true, parseTagValue:false, parseAttributeValue:false });
 const camerasFile = process.argv[2];
 const outDir = process.argv[3];

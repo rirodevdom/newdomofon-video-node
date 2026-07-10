@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 BACKUP_DIR="$PROJECT_DIR/backups/single-smartyard-link-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 
