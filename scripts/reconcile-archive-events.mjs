@@ -45,6 +45,15 @@ function stateFilePath(dbPath) {
   );
 }
 
+function readJsonFile(file) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function localHour(timestampMs) {
   const date = new Date(timestampMs);
   const year = date.getFullYear();
@@ -75,6 +84,67 @@ function writeState(file, payload) {
   fs.renameSync(temp, file);
 }
 
+function mountedExactly(target) {
+  let resolved;
+  try {
+    resolved = fs.realpathSync(target);
+  } catch {
+    return false;
+  }
+
+  try {
+    const lines = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n');
+    return lines.some((line) => {
+      if (!line) return false;
+      const fields = line.split(' ');
+      if (fields.length < 5) return false;
+      const mountPoint = fields[4]
+        .replace(/\\040/g, ' ')
+        .replace(/\\011/g, '\t')
+        .replace(/\\012/g, '\n')
+        .replace(/\\134/g, '\\');
+      try {
+        return fs.realpathSync(mountPoint) === resolved;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+function archiveStorageSafety(dvrRoot) {
+  const pauseMarker = String(
+    process.env.DVR_DISK_GUARD_PAUSE_MARKER || '/run/newdomofon-video/node-disk-paused'
+  );
+  if (fs.existsSync(pauseMarker)) {
+    return { safe: false, reason: 'node_disk_guard_paused' };
+  }
+
+  const diskStateFile = String(
+    process.env.DVR_DISK_GUARD_STATE_FILE || '/run/newdomofon-video/node-disk-state.json'
+  );
+  const diskState = readJsonFile(diskStateFile);
+  if (diskState?.state === 'critical') {
+    return { safe: false, reason: `node_disk_guard_${String(diskState.reason || 'critical')}` };
+  }
+
+  try {
+    if (!fs.statSync(dvrRoot).isDirectory()) {
+      return { safe: false, reason: 'dvr_root_is_not_directory' };
+    }
+  } catch {
+    return { safe: false, reason: 'dvr_root_unavailable' };
+  }
+
+  if (boolEnv('DVR_DISK_REQUIRE_MOUNTPOINT', false) && !mountedExactly(dvrRoot)) {
+    return { safe: false, reason: 'required_dvr_mount_missing' };
+  }
+
+  return { safe: true, reason: 'ok' };
+}
+
 async function loadAssignedCameras() {
   const masterUrl = String(process.env.DVR_MASTER_URL || '').replace(/\/$/, '');
   const nodeId = String(process.env.DVR_NODE_ID || '');
@@ -102,6 +172,27 @@ async function loadAssignedCameras() {
   return Array.isArray(payload?.cameras) ? payload.cameras : [];
 }
 
+function selectEventHours(database, streams, cutoffMs, cursorBucketMs, cursorStream, limit) {
+  const placeholders = streams.map(() => '?').join(',');
+  return database.prepare(`
+    WITH event_hours AS (
+      SELECT stream_name,
+             CAST(occurred_at_ms / 3600000 AS INTEGER) * 3600000 AS bucket_ms,
+             count(*) AS event_count
+        FROM camera_events
+       WHERE stream_name IN (${placeholders})
+         AND occurred_at_ms < ?
+       GROUP BY stream_name, bucket_ms
+    )
+    SELECT stream_name, bucket_ms, event_count
+      FROM event_hours
+     WHERE bucket_ms > ?
+        OR (bucket_ms = ? AND stream_name > ?)
+     ORDER BY bucket_ms ASC, stream_name ASC
+     LIMIT ?
+  `).all(...streams, cutoffMs, cursorBucketMs, cursorBucketMs, cursorStream, limit);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -113,11 +204,28 @@ async function main() {
   const dbPath = eventDbPath();
   const stateFile = stateFilePath(dbPath);
   const checkedAt = new Date().toISOString();
+  const dvrRoot = String(process.env.DVR_ROOT || '/var/lib/newdomofon-video/dvr');
 
   if (!enabled) {
     const state = { ok: true, enabled: false, mode: args.apply ? 'apply' : 'dry-run', checked_at: checkedAt };
     writeState(stateFile, state);
     console.log(JSON.stringify(state));
+    return;
+  }
+
+  const storageSafety = archiveStorageSafety(dvrRoot);
+  if (!storageSafety.safe) {
+    const state = {
+      ok: false,
+      enabled: true,
+      mode: args.apply ? 'apply' : 'dry-run',
+      skipped: storageSafety.reason,
+      dvr_root: dvrRoot,
+      checked_at: checkedAt
+    };
+    writeState(stateFile, state);
+    console.error(JSON.stringify(state));
+    process.exitCode = 1;
     return;
   }
 
@@ -179,24 +287,30 @@ async function main() {
   const minAgeMinutes = intEnv('DVR_ARCHIVE_EVENT_SYNC_MIN_AGE_MINUTES', 120, 15, 10080);
   const maxHours = intEnv('DVR_ARCHIVE_EVENT_SYNC_MAX_HOURS_PER_RUN', 1000, 1, 100000);
   const cutoffMs = Date.now() - minAgeMinutes * 60_000;
-  const dvrRoot = String(process.env.DVR_ROOT || '/var/lib/newdomofon-video/dvr');
+  const previousState = args.apply ? readJsonFile(stateFile) : null;
+  const sameScope = String(previousState?.scope_stream || '') === args.stream;
+  let cursorBucketMs = sameScope && Number.isFinite(Number(previousState?.cursor_bucket_ms))
+    ? Number(previousState.cursor_bucket_ms)
+    : -1;
+  let cursorStream = sameScope ? String(previousState?.cursor_stream_name || '') : '';
   const database = new DatabaseSync(dbPath);
 
   database.exec('PRAGMA busy_timeout = 15000;');
 
-  const streams = [...localStreams];
-  const placeholders = streams.map(() => '?').join(',');
-  const rows = database.prepare(`
-    SELECT stream_name,
-           CAST(occurred_at_ms / 3600000 AS INTEGER) * 3600000 AS bucket_ms,
-           count(*) AS event_count
-      FROM camera_events
-     WHERE stream_name IN (${placeholders})
-       AND occurred_at_ms < ?
-     GROUP BY stream_name, bucket_ms
-     ORDER BY bucket_ms ASC
-     LIMIT ?
-  `).all(...streams, cutoffMs, maxHours);
+  const streams = [...localStreams].sort();
+  if (streams.length > 900) {
+    database.close();
+    throw new Error(`Too many local archive streams for one reconciliation query: ${streams.length}`);
+  }
+
+  let rows = selectEventHours(database, streams, cutoffMs, cursorBucketMs, cursorStream, maxHours);
+  let wrapped = false;
+  if (!rows.length && (cursorBucketMs >= 0 || cursorStream)) {
+    cursorBucketMs = -1;
+    cursorStream = '';
+    rows = selectEventHours(database, streams, cutoffMs, cursorBucketMs, cursorStream, maxHours);
+    wrapped = true;
+  }
 
   const groups = new Map();
   for (const row of rows) {
@@ -250,18 +364,25 @@ async function main() {
     database.close();
   }
 
+  const lastRow = rows[rows.length - 1];
+  const nextCursorBucketMs = args.apply && lastRow ? Number(lastRow.bucket_ms) : cursorBucketMs;
+  const nextCursorStream = args.apply && lastRow ? String(lastRow.stream_name || '') : cursorStream;
   const state = {
     ok: true,
     enabled: true,
     mode: args.apply ? 'apply' : 'dry-run',
     database: dbPath,
     dvr_root: dvrRoot,
+    scope_stream: args.stream,
     local_streams: streams.length,
     min_age_minutes: minAgeMinutes,
     archive_hours_checked: archiveHoursChecked,
     missing_archive_hours: missingArchiveHours,
     candidate_events: candidateEvents,
     deleted_events: deletedEvents,
+    cursor_bucket_ms: nextCursorBucketMs,
+    cursor_stream_name: nextCursorStream,
+    wrapped,
     examples,
     checked_at: new Date().toISOString()
   };
