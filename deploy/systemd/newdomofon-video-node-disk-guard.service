@@ -1,6 +1,6 @@
 [Unit]
 Description=NewDomofon Video Node Disk Guard
-Documentation=file:/opt/newdomofon-video-node/README.md
+Documentation=file:/opt/newdomofon-video-node/docs/DISK_PROTECTION.md
 After=local-fs.target
 
 [Service]
@@ -17,5 +17,3 @@ PrivateTmp=false
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/var/lib/newdomofon-video /var/log/newdomofon-video /run/newdomofon-video /run/lock /tmp /var/tmp
-CapabilityBoundingSet=
-AmbientCapabilities=
