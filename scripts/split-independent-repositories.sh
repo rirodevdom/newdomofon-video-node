@@ -33,7 +33,6 @@ need_command() {
 [[ -n "$OUTPUT_ROOT" ]] || fail "output directory is required"
 need_command git
 need_command git-filter-repo
-need_command rsync
 
 SOURCE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "run inside a Git working tree"
 SOURCE_SHA="$(git -C "$SOURCE_ROOT" rev-parse "$REF")" || fail "cannot resolve REF=$REF"
@@ -98,6 +97,23 @@ The master/node integration contract is stored in:
 EOF
 }
 
+rewrite_project_install_root() {
+  local repo="$1"
+  local project="$2"
+  local install_root="/opt/newdomofon-video-$project"
+  local scope
+
+  # Runtime deployment files must not keep pointing at the old monorepository.
+  # Documentation is intentionally not rewritten because it also documents the
+  # source/rollback path used during migration.
+  for scope in deploy scripts; do
+    [[ -d "$repo/$scope" ]] || continue
+    while IFS= read -r -d '' file; do
+      sed -i "s#/opt/newdomofon-video#$install_root#g" "$file"
+    done < <(grep -RIlZ --exclude-dir=.git '/opt/newdomofon-video' "$repo/$scope" 2>/dev/null || true)
+  done
+}
+
 prune_master_files() {
   local repo="$1"
 
@@ -105,7 +121,8 @@ prune_master_files() {
     "$repo/deploy/env/node.env.example" \
     "$repo/deploy/nginx/newdomofon-video-node.conf" \
     "$repo/deploy/systemd/newdomofon-video-dvr.service" \
-    "$repo/scripts/deploy-node.sh"
+    "$repo/scripts/deploy-node.sh" \
+    "$repo/scripts/split-independent-repositories.sh"
 
   # Runtime data and generated artifacts must never enter the new repository.
   rm -rf -- \
@@ -114,22 +131,37 @@ prune_master_files() {
     "$repo/backend/node_modules" \
     "$repo/frontend/node_modules" \
     "$repo/frontend/dist"
+
+  rewrite_project_install_root "$repo" master
 }
 
 prune_node_files() {
   local repo="$1"
+  local service="$repo/deploy/systemd/newdomofon-video-dvr.service"
 
   rm -f -- \
     "$repo/deploy/env/master.env.example" \
     "$repo/deploy/nginx/newdomofon-video.conf" \
     "$repo/deploy/systemd/newdomofon-video-backend.service" \
-    "$repo/scripts/deploy-master.sh"
+    "$repo/scripts/deploy-master.sh" \
+    "$repo/scripts/split-independent-repositories.sh"
 
   rm -rf -- \
     "$repo/backups" \
     "$repo/node_modules" \
     "$repo/dvr-engine/node_modules" \
     "$repo/dvr-engine/dist"
+
+  rewrite_project_install_root "$repo" node
+
+  # A real video node does not use the master PostgreSQL database. The current
+  # monorepository unit still had a hard Requires=postgresql.service dependency.
+  if [[ -f "$service" ]]; then
+    sed -i \
+      -e 's/^After=network-online.target postgresql.service$/After=network-online.target/' \
+      -e '/^Requires=postgresql.service$/d' \
+      "$service"
+  fi
 }
 
 split_repository() {
@@ -200,6 +232,7 @@ verify_no_cross_source_dependencies() {
   local master="$1"
   local node="$2"
   local failed=0
+  local node_service="$node/deploy/systemd/newdomofon-video-dvr.service"
 
   echo
   echo "===== Verifying repository boundaries ====="
@@ -226,6 +259,21 @@ verify_no_cross_source_dependencies() {
     echo "Node contract missing" >&2
     failed=1
   }
+
+  if grep -RIl --exclude-dir=.git '/opt/newdomofon-video/' "$master/deploy" "$master/scripts" 2>/dev/null | grep -q .; then
+    echo "Old monorepository install path remains in master runtime files" >&2
+    failed=1
+  fi
+
+  if grep -RIl --exclude-dir=.git '/opt/newdomofon-video/' "$node/deploy" "$node/scripts" 2>/dev/null | grep -q .; then
+    echo "Old monorepository install path remains in node runtime files" >&2
+    failed=1
+  fi
+
+  if [[ -f "$node_service" ]] && grep -Eq '(^|[[:space:]])postgresql\.service([[:space:]]|$)' "$node_service"; then
+    echo "Node systemd unit still depends on PostgreSQL" >&2
+    failed=1
+  fi
 
   if [[ "$failed" -ne 0 ]]; then
     fail "repository boundary verification failed"
