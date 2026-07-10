@@ -42,7 +42,7 @@ fi
 log() {
   local level="$1"; shift
   logger -t newdomofon-node-disk-guard -p "daemon.${level}" -- "$*" 2>/dev/null || true
-  printf '%s [%s] %s\n' "$(date -Is)" "$level" "$*"
+  printf '%s [%s] %s\n' "$(date -Is)" "$level" "$*" >&2
 }
 
 is_true() {
