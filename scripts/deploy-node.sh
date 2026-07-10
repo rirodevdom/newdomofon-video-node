@@ -5,6 +5,7 @@ PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 INSTALL_DISK_GUARD="${INSTALL_DISK_GUARD:-1}"
 INSTALL_JOURNAL_LIMITS="${INSTALL_JOURNAL_LIMITS:-1}"
+INSTALL_ARCHIVE_EVENT_SYNC="${INSTALL_ARCHIVE_EVENT_SYNC:-1}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root: sudo PROJECT_DIR=$PROJECT_DIR bash scripts/deploy-node.sh" >&2
@@ -50,6 +51,11 @@ if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
     bash "$PROJECT_DIR/scripts/install-node-disk-guard.sh"
 fi
 
+if [[ "$INSTALL_ARCHIVE_EVENT_SYNC" =~ ^(1|true|yes|on)$ ]]; then
+  PROJECT_DIR="$PROJECT_DIR" \
+    bash "$PROJECT_DIR/scripts/install-archive-event-sync.sh"
+fi
+
 if [[ ! -e /run/newdomofon-video/node-disk-paused ]]; then
   systemctl restart newdomofon-video-dvr
 else
@@ -62,4 +68,7 @@ systemctl reload nginx
 echo "Node deployed. Check: curl -fsS http://127.0.0.1:3010/health"
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
   echo "Disk guard: cat /run/newdomofon-video/node-disk-state.json"
+fi
+if [[ "$INSTALL_ARCHIVE_EVENT_SYNC" =~ ^(1|true|yes|on)$ ]]; then
+  echo "Archive/event sync: cat /var/lib/newdomofon-video/events/archive-event-sync-state.json"
 fi
