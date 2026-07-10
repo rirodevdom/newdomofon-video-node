@@ -12,15 +12,20 @@ import { listArchiveRanges, listSegments, serveSafeFile, streamRoot, safeStreamN
 import { exportMp4 } from './exporter.js';
 import { cleanupArchives } from './cleanup.js';
 import { connectOnvifCamera } from './onvif.js';
-import { startOnvifEventCollector } from './onvifEvents.js';
 import { startOnvifEventCollectorV2 } from './onvifEventsV2.js';
-import { startOnvifLegacyFallbackCollector } from './onvifEventsLegacyFallback.js';
 import { startHikvisionEventCollector } from './hikvisionEvents.js';
 import { startDeviceArchiveIndexer } from './deviceArchiveIndexer.js';
 import { startVideoMotionDetector, stopAllVideoMotionDetectors } from './videoMotionDetector.js';
 import { registerArchiveExportRoute } from './archiveExport.js';
 import { requireMediaToken, rewritePlaylistForNode } from './mediaAuth.js';
 import { heartbeat, isNodeMode, pollCommands } from './nodeClient.js';
+import {
+  closeLocalEventStore,
+  getLocalEventStoreHealth,
+  initializeLocalEventStore,
+  startLocalEventRetention
+} from './localEventStore.js';
+import { registerLocalEventRoutes } from './localEventsApi.js';
 import { cleanupDeviceArchiveSessions, createDeviceArchivePlaylist, deviceArchiveFile, listDeviceArchiveRanges, prepareDeviceArchiveSession } from './deviceArchive.js';
 
 const app = express();
@@ -39,6 +44,8 @@ app.use((req, res, next) => {
 });
 app.use(morgan('combined'));
 registerArchiveExportRoute(app);
+initializeLocalEventStore();
+registerLocalEventRoutes(app);
 
 const maxArchiveRangesSeconds = Math.max(config.maxExportSeconds, Number(process.env.DVR_ARCHIVE_RANGES_MAX_SECONDS || 31 * 24 * 60 * 60));
 const maxDeviceArchiveRangesSeconds = Math.max(config.maxExportSeconds, Number(process.env.DVR_DEVICE_ARCHIVE_RANGES_MAX_SECONDS || 31 * 24 * 60 * 60));
@@ -82,7 +89,8 @@ app.get('/health', (_req, res) => res.json({
   service: 'dvr-engine',
   mode: config.role,
   node_id: config.nodeId || null,
-  recording_enabled: config.role !== 'master'
+  recording_enabled: config.role !== 'master',
+  events: getLocalEventStoreHealth()
 }));
 app.get('/recorders', (_req, res) => res.json({ items: getAllRecorderStatuses() }));
 
@@ -257,9 +265,8 @@ if (config.role === 'master') {
   setInterval(() => cleanupArchives().catch(console.error), config.cleanupIntervalMinutes * 60_000);
   setInterval(() => cleanupDeviceArchiveSessions(), 60_000);
   cleanupArchives().catch(console.error);
-  // old ONVIF collector disabled
+  startLocalEventRetention();
   startOnvifEventCollectorV2();
-  startOnvifLegacyFallbackCollector();
   startHikvisionEventCollector();
   startDeviceArchiveIndexer();
   startVideoMotionDetector();
@@ -270,6 +277,7 @@ async function shutdown(signal: string) {
   stopAllRecorders();
   stopAllVideoMotionDetectors();
   server.close(async () => {
+    closeLocalEventStore();
     await pool.end();
     process.exit(0);
   });
