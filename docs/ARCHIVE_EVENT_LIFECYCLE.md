@@ -19,37 +19,70 @@ Default settings:
 
 ```env
 DVR_ARCHIVE_EVENT_SYNC_ENABLED=true
+DVR_ARCHIVE_EVENT_SYNC_APPLY=false
 DVR_ARCHIVE_EVENT_SYNC_MIN_AGE_MINUTES=120
 DVR_ARCHIVE_EVENT_SYNC_MAX_HOURS_PER_RUN=1000
 DVR_ARCHIVE_EVENT_SYNC_MASTER_TIMEOUT_MS=15000
 ```
+
+`DVR_ARCHIVE_EVENT_SYNC_APPLY=false` is the safe rollout default. The timer runs automatically but only reports orphan events. No rows are deleted until an operator explicitly sets the value to `true`.
+
+The installer also ensures that `/etc/newdomofon-video` is traversable only by root and the `newdomofon` group, and that `app.env` remains mode `0640`.
 
 ## Dry-run
 
 Dry-run does not delete anything:
 
 ```bash
-sudo -u newdomofon \
-  /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs \
-  --dry-run
+sudo -u newdomofon bash -c '
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+exec /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs --dry-run
+'
 ```
 
 For one camera:
 
 ```bash
-sudo -u newdomofon \
-  /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs \
-  --dry-run --stream OnvifP
+sudo -u newdomofon bash -c '
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+exec /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs --dry-run --stream OnvifP
+'
 ```
 
 Inspect `candidate_events`, `missing_archive_hours` and `examples` before applying.
 
-## Apply
+## Enable automatic apply
+
+After reviewing the dry-run output, set:
+
+```env
+DVR_ARCHIVE_EVENT_SYNC_APPLY=true
+```
+
+Then run one controlled pass:
 
 ```bash
-sudo -u newdomofon \
-  /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs \
-  --apply
+systemctl start newdomofon-video-archive-event-sync.service
+cat /var/lib/newdomofon-video/events/archive-event-sync-state.json | jq .
+```
+
+The timer will use apply mode on subsequent runs. To return to report-only mode, set the value back to `false`.
+
+## Manual apply
+
+A one-off manual apply can be executed without changing the timer mode:
+
+```bash
+sudo -u newdomofon bash -c '
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+exec /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs --apply
+'
 ```
 
 The operation is idempotent. Repeating it does not remove additional events while matching archive segments remain.
