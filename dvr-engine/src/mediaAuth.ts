@@ -55,7 +55,10 @@ function rewritePermanentMediaToken(token: any): string | null {
 
 type Scope = 'camera' | 'live' | 'archive' | 'export' | 'file' | 'status' | 'events';
 
-const cameraScopeTargets: Scope[] = ['live', 'archive', 'file', 'status'];
+// A camera-scoped token is the broad playback permission used by the SmartYard
+// compatibility gateway. Preview generation requests a short MP4 export from
+// the assigned node, so export must be included alongside live/archive access.
+const cameraScopeTargets: Scope[] = ['live', 'archive', 'export', 'file', 'status'];
 
 function scopeAllowed(payloadScope: unknown, allowedScopes: Scope[]): boolean {
   const scope = String(payloadScope || '') as Scope;
