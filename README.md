@@ -1,129 +1,267 @@
 # NewDomofon Video Node
 
-Самостоятельный **data plane** NewDomofon Video: запись камер, live, архив, экспорт и локальное хранение событий.
+Самостоятельный **data plane** системы NewDomofon Video: подключение к камерам, FFmpeg recorder, live HLS, локальный архив, MP4 export и локальное SQLite/WAL-хранилище событий.
 
-Node управляется master через versioned HTTP API, но не использует PostgreSQL master и не импортирует его код.
+Этот репозиторий предназначен только для **video node**. Пользователи, RBAC, устройства, камеры, назначения и управляемые внешние токены хранятся на master из репозитория [`rirodevdom/newdomofon-video-master`](https://github.com/rirodevdom/newdomofon-video-master).
 
-## Архитектура и границы ответственности
+> Production-платформа: Debian 12, Node.js 22, FFmpeg, Nginx, systemd. Docker и PostgreSQL для runtime node не требуются.
 
-Node отвечает за:
+---
 
-- подключение к назначенным камерам;
-- запись RTSP-потоков через FFmpeg;
-- live HLS;
+## Содержание
+
+1. [Архитектура](#архитектура)
+2. [Runtime-данные и компоненты](#runtime-данные-и-компоненты)
+3. [Требования и расчёт диска](#требования-и-расчёт-диска)
+4. [Порты и сетевой доступ](#порты-и-сетевой-доступ)
+5. [Быстрый план установки](#быстрый-план-установки)
+6. [Полная установка node на чистый Debian 12](#полная-установка-node-на-чистый-debian-12)
+7. [Подключение камер и проверка recorder](#подключение-камер-и-проверка-recorder)
+8. [Live, архив и MP4 export](#live-архив-и-mp4-export)
+9. [ONVIF, Hikvision и video-motion события](#onvif-hikvision-и-video-motion-события)
+10. [SQLite event store и Event API](#sqlite-event-store-и-event-api)
+11. [Синхронизация событий с существующим архивом](#синхронизация-событий-с-существующим-архивом)
+12. [Защита от заполнения диска](#защита-от-заполнения-диска)
+13. [Проверка после установки](#проверка-после-установки)
+14. [Безопасное обновление production](#безопасное-обновление-production)
+15. [Backup, восстановление и перенос диска](#backup-восстановление-и-перенос-диска)
+16. [Диагностика](#диагностика)
+17. [Безопасность и масштабирование](#безопасность-и-масштабирование)
+18. [Разработка и разделение репозиториев](#разработка-и-разделение-репозиториев)
+
+---
+
+# Архитектура
+
+## Общая схема
+
+```text
+Браузер / SmartYard-Vue
+          |
+          | HTTPS к master
+          v
++-----------------------------+
+| MASTER                      |
+| RBAC, PostgreSQL, UI        |
+| managed tokens              |
+| media/events gateway        |
++-----------------------------+
+          |
+          | node-agent config/commands
+          | short-lived HMAC media/event token
+          v
++-----------------------------+
+| VIDEO NODE                  |
+| DVR engine :3010            |
+| FFmpeg recorder             |
+| HLS/live/archive/export     |
+| SQLite/WAL events           |
+| disk guard                  |
+| archive/event sync          |
++-----------------------------+
+          |
+          | RTSP / ONVIF / Hikvision
+          v
+       Камеры / NVR
+```
+
+## Node отвечает за
+
+- получение назначенных камер с master;
+- подключение к RTSP-потокам;
+- безопасную подстановку device/ONVIF credentials в FFmpeg URL в памяти;
+- запись HLS-сегментов через FFmpeg;
+- live playlist;
 - локальный DVR-архив;
-- archive ranges и MP4 export;
+- archive ranges;
+- MP4 export и SmartYard preview export;
 - ONVIF PullPoint events;
 - Hikvision alertStream events;
 - опциональный FFmpeg video-motion detector;
-- локальное SQLite/WAL-хранилище событий;
+- локальную SQLite/WAL database событий;
 - event retention;
-- выполнение команд master;
-- heartbeat и диагностику storage/recorders/events.
+- синхронизацию событий с реально существующим архивом;
+- heartbeat, storage status и recorder diagnostics;
+- выполнение команд `reload_cameras` от master;
+- аварийную защиту от заполнения диска.
 
-Node **не должна**:
+## Node не должна
 
 - подключаться к PostgreSQL master;
 - хранить пользователей и RBAC;
-- выдавать пользовательские права самостоятельно;
-- отправлять payload событий на master;
+- самостоятельно принимать решение о пользовательском доступе;
+- хранить master JWT;
+- отправлять payload событий в PostgreSQL master;
 - использовать общий checkout с master;
-- зависеть от `newdomofon-video-backend.service` или `postgresql.service`.
+- зависеть от `newdomofon-video-backend.service`;
+- использовать credentials другой node.
 
-Master хранит только управляющие данные и назначение камер. При запросе timeline master проверяет права пользователя, выпускает короткоживущий `scope=events` token и проксирует запрос на node.
+## Авторизация media/event запросов
 
-Контракты:
+1. Пользователь или SmartYard обращается к master.
+2. Master проверяет managed token/RBAC и назначение камеры.
+3. Master подписывает короткоживущий node token с нужным scope.
+4. Node проверяет HMAC, stream, scope и срок действия.
+5. Node отдаёт live, archive, export, file или events.
+
+Broad `camera` scope разрешает операции воспроизведения, включая короткий MP4 export для preview. Event API принимает отдельный `events` scope.
+
+## Контракты
 
 ```text
 contracts/node-agent-api-v1.md
 contracts/node-events-api-v1.md
 ```
 
-## Runtime-данные
+---
 
-По умолчанию:
+# Runtime-данные и компоненты
 
-```text
-/var/lib/newdomofon-video/
-├── dvr/                         видеоархив и live-файлы
-└── events/
-    ├── events.sqlite3           основная event database
-    ├── events.sqlite3-wal       SQLite WAL
-    └── events.sqlite3-shm       SQLite shared memory
-```
-
-Конфигурация и секреты:
+## Production-пути
 
 ```text
-/etc/newdomofon-video/app.env
-```
-
-Логи:
-
-```text
-journalctl -u newdomofon-video-dvr.service
+/opt/newdomofon-video-node/                    Git checkout
+/etc/newdomofon-video/app.env                  secrets и runtime config
+/var/lib/newdomofon-video/dvr/                 live и архив
+/var/lib/newdomofon-video/events/events.sqlite3
+/var/lib/newdomofon-video/events/events.sqlite3-wal
+/var/lib/newdomofon-video/events/events.sqlite3-shm
+/var/lib/newdomofon-video/events/archive-event-sync-state.json
+/run/newdomofon-video/node-disk-state.json
+/run/newdomofon-video/node-disk-paused
 /var/log/newdomofon-video/
+/etc/nginx/sites-available/newdomofon-video-node.conf
 ```
 
-Не добавляйте runtime-данные, архив или секреты в Git.
+## Типичная структура архива
+
+```text
+/var/lib/newdomofon-video/dvr/
+└── entrance_main/
+    ├── live.m3u8
+    ├── live-*.ts
+    └── 2026-07-11/
+        ├── 20/
+        │   ├── segment-....ts
+        │   └── ...
+        └── 21/
+            └── ...
+```
+
+Аварийный disk guard удаляет только завершённые каталоги вида:
+
+```text
+<stream>/<YYYY-MM-DD>/<HH>
+```
+
+Текущий UTC-час не удаляется.
 
 ## Состав репозитория
 
 ```text
-dvr-engine/            recorder, media API, node agent, event collectors
+dvr-engine/            TypeScript recorder, media API, node agent, events
 dvr-archive-proxy/     archive compatibility helpers
-restreamer/             restream helper
-restream-gateway/       restream gateway
-live-only-engine/       live-only helper
-contracts/              versioned master/node API contracts
-deploy/                 systemd, nginx and env examples
-scripts/                install, deploy, repair and diagnostics
+restreamer/            restream helper
+restream-gateway/      restream gateway
+live-only-engine/      live-only helper
+contracts/             versioned master/node contracts
+deploy/env/            environment example
+deploy/nginx/          Nginx template
+deploy/systemd/        service/timer units
+deploy/journald/       journald limits
+scripts/               install, deploy, guard, sync и diagnostics
 ```
 
-## Поддерживаемая платформа
+---
 
-Рекомендуется:
+# Требования и расчёт диска
 
-- Debian 12 x86_64;
-- Node.js 22.12 или новее;
-- FFmpeg из Debian 12 или совместимая новая версия;
-- nginx;
-- минимум 4 CPU и 4 GB RAM;
-- отдельный быстрый диск под `/var/lib/newdomofon-video/dvr`;
-- DNS-адрес, например `video-node1.example.com`;
-- синхронизация времени через systemd-timesyncd или chrony.
+## Рекомендуемая конфигурация
 
-Размер диска рассчитывайте по суммарному bitrate камер и retention.
-
-Пример:
+Для небольшой node:
 
 ```text
-8 Mbit/s ≈ 86.4 GB в сутки на одну камеру
-4 Mbit/s ≈ 43.2 GB в сутки на одну камеру
+OS:       Debian 12 x86_64
+CPU:      4 cores
+RAM:      4–8 GB
+System:   20–40 GB SSD
+Archive:  отдельный HDD/SSD/NVMe filesystem
+Node.js:  22.12+
+FFmpeg:   Debian 12 package или совместимая новая версия
+Proxy:    Nginx
+Time:     systemd-timesyncd или chrony
 ```
 
-Добавляйте запас минимум 15–20% для live, WAL, export и служебных файлов.
+CPU зависит от режима:
 
-## Сетевые требования
+- stream copy HLS почти не транскодирует видео;
+- MP4 export создаёт кратковременную нагрузку;
+- video-motion detector заметно увеличивает CPU;
+- device archive sessions используют дополнительные FFmpeg processes.
 
-Node должна иметь:
+## Формула объёма
 
-- исходящий HTTPS к master;
-- доступ к RTSP/ONVIF/Hikvision адресам камер;
-- синхронизированное время;
-- публичный или внутренний адрес, доступный master;
-- публичный HTTPS URL, если клиенты получают media непосредственно с node.
-
-Порты:
+Приблизительный объём одной камеры:
 
 ```text
-22/tcp     SSH, только с административных адресов
-80/tcp     nginx HTTP
-443/tcp    nginx HTTPS
-3010/tcp   DVR engine; разрешать только master/private network
+GB/day ≈ bitrate_Mbit × 10.8
 ```
 
-Через nginx публикуются:
+Примеры:
+
+| Bitrate | В сутки | 7 суток | 30 суток |
+|---:|---:|---:|---:|
+| 2 Mbit/s | 21.6 GB | 151 GB | 648 GB |
+| 4 Mbit/s | 43.2 GB | 302 GB | 1.30 TB |
+| 8 Mbit/s | 86.4 GB | 605 GB | 2.59 TB |
+| 12 Mbit/s | 129.6 GB | 907 GB | 3.89 TB |
+
+Для нескольких камер:
+
+```text
+required ≈ sum(camera_GB_per_day × retention_days)
+```
+
+Добавьте минимум 15–20% запаса для:
+
+- live window;
+- незавершённого текущего часа;
+- SQLite WAL;
+- MP4 export;
+- device archive sessions;
+- filesystem metadata;
+- обновлений и журналов.
+
+## Пример расчёта
+
+16 камер по 4 Mbit/s, retention 14 дней:
+
+```text
+43.2 GB × 16 × 14 = 9676.8 GB
++ 20% reserve ≈ 11.6 TB
+```
+
+---
+
+# Порты и сетевой доступ
+
+## Публичные порты node
+
+```text
+22/tcp   SSH; только административные IP
+80/tcp   HTTP/ACME
+443/tcp  public node HTTPS, если используется direct media
+```
+
+## DVR engine
+
+```text
+3010/tcp DVR engine API
+```
+
+Порт `3010` разрешайте только master/private network. Публичным клиентам достаточно Nginx `443`.
+
+## Nginx публикует
 
 ```text
 /health
@@ -132,11 +270,43 @@ Node должна иметь:
 /device-archive/
 ```
 
-# Полное развёртывание на чистом Debian 12
+## Исходящий доступ node
 
-Ниже команды выполняются от `root`.
+Node должна иметь:
 
-## 1. Подготовьте DNS и переменные
+- HTTPS к master;
+- DNS resolution master;
+- доступ к RTSP-портам камер, обычно `554/tcp`;
+- доступ к ONVIF HTTP/HTTPS ports камер;
+- доступ к Hikvision ISAPI/alertStream при использовании;
+- NTP/time synchronization.
+
+---
+
+# Быстрый план установки
+
+```text
+1. Создать node на master и получить bootstrap JSON.
+2. Подготовить Debian 12 и отдельный архивный диск.
+3. Клонировать только node repository.
+4. Запустить install-debian12-prereqs.sh.
+5. Создать /etc/newdomofon-video/app.env.
+6. Проверить mount и права.
+7. Запустить deploy-node.sh.
+8. Настроить Nginx domain и TLS.
+9. Ограничить 3010 firewall-правилами.
+10. Проверить heartbeat, recorder, live, archive и events.
+11. Проверить disk guard.
+12. Просмотреть archive-event sync в dry-run и только затем включить apply.
+```
+
+---
+
+# Полная установка node на чистый Debian 12
+
+Все команды ниже выполняются от `root`, если не указано иное.
+
+## 1. Подготовьте переменные
 
 ```bash
 export NODE_NAME="video-node1"
@@ -145,64 +315,78 @@ export NODE_PRIVATE_IP="10.0.0.31"
 export MASTER_DOMAIN="video.example.com"
 export NODE_REPO="https://github.com/rirodevdom/newdomofon-video-node.git"
 export NODE_DIR="/opt/newdomofon-video-node"
+export DVR_ROOT="/var/lib/newdomofon-video/dvr"
 ```
 
-Проверьте DNS:
+Проверка DNS и сети:
 
 ```bash
 getent ahosts "$NODE_DOMAIN"
 getent ahosts "$MASTER_DOMAIN"
+ping -c 2 "$MASTER_DOMAIN" || true
 ```
 
-## 2. Подготовьте отдельный архивный диск
-
-Лучший вариант — смонтировать раздел непосредственно в:
-
-```text
-/var/lib/newdomofon-video/dvr
-```
-
-Посмотрите диски:
+## 2. Обновите Debian
 
 ```bash
-lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,MODEL
+apt-get update
+apt-get dist-upgrade -y
+apt-get install -y git ca-certificates curl openssl
+reboot
 ```
 
-**Не форматируйте диск, если на нём уже есть данные.** Следующий пример только для нового пустого раздела `/dev/sdb1`:
+После повторного подключения:
+
+```bash
+cat /etc/debian_version
+uname -a
+timedatectl set-timezone UTC
+systemctl enable --now systemd-timesyncd
+timedatectl status
+```
+
+## 3. Подготовьте архивный диск
+
+Сначала определите устройство:
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,MODEL,SERIAL
+```
+
+> Не форматируйте существующий диск с данными. Следующий пример предназначен только для нового пустого `/dev/sdb1`.
 
 ```bash
 mkfs.ext4 -L NEWDOMOFON_DVR /dev/sdb1
 
-install -d -m 0750 /var/lib/newdomofon-video/dvr
+install -d -m 0750 "$DVR_ROOT"
 
-UUID="$(blkid -s UUID -o value /dev/sdb1)"
-echo "UUID=${UUID} /var/lib/newdomofon-video/dvr ext4 defaults,noatime 0 2" \
+DVR_UUID="$(blkid -s UUID -o value /dev/sdb1)"
+test -n "$DVR_UUID"
+
+echo "UUID=${DVR_UUID} ${DVR_ROOT} ext4 defaults,noatime 0 2" \
   >> /etc/fstab
 
 mount -a
-findmnt /var/lib/newdomofon-video/dvr
+findmnt "$DVR_ROOT"
+df -hT "$DVR_ROOT"
 ```
 
-Не используйте `/dev/sdX` в `fstab`; используйте UUID.
+Используйте UUID, а не `/dev/sdX`, потому что имена устройств могут измениться после reboot.
 
-Если архив уже существует, сначала остановите DVR и перенесите данные через `rsync -aHAX`.
+Если диск уже содержит архив, сначала смонтируйте его во временную точку и проверьте данные. Не выполняйте `mkfs`.
 
-## 3. Клонируйте отдельный node-репозиторий
+## 4. Клонируйте node repository
 
 ```bash
-apt-get update
-apt-get upgrade -y
-apt-get install -y git ca-certificates curl
-
-rm -rf "$NODE_DIR.new"
-git clone "$NODE_REPO" "$NODE_DIR.new"
-
 install -d -m 0755 /opt
-mv "$NODE_DIR.new" "$NODE_DIR"
 
+git clone "$NODE_REPO" "$NODE_DIR"
 cd "$NODE_DIR"
 git switch main
 git pull --ff-only origin main
+
+git log -1 --oneline
+git status --short
 ```
 
 Node устанавливается только из:
@@ -211,9 +395,7 @@ Node устанавливается только из:
 https://github.com/rirodevdom/newdomofon-video-node
 ```
 
-Старый объединённый monorepo не используется.
-
-## 4. Установите зависимости
+## 5. Установите зависимости
 
 ```bash
 cd "$NODE_DIR"
@@ -230,11 +412,11 @@ nginx -v
 id newdomofon
 ```
 
-Helper может установить пакет PostgreSQL для совместимости старых scripts, но runtime node к PostgreSQL не подключается, а systemd unit не зависит от `postgresql.service`.
+Prerequisites script может установить PostgreSQL packages для совместимости старых вспомогательных scripts, но runtime node не подключается к PostgreSQL и не зависит от PostgreSQL service.
 
-## 5. Получите credentials node на master
+## 6. Получите bootstrap JSON с master
 
-Сначала создайте node на master через UI или API. Ответ master должен содержать:
+На master при создании node выдаются:
 
 ```text
 node_id
@@ -242,32 +424,25 @@ agent_token
 media_secret
 ```
 
-Рекомендуется сохранить ответ master в файл:
+Скопируйте JSON на node:
 
 ```text
 /root/video-node1-bootstrap.json
 ```
 
-Пример содержимого:
-
-```json
-{
-  "node_id": "UUID",
-  "agent_token": "SECRET",
-  "media_secret": "SECRET"
-}
-```
-
-Передайте файл на node через защищённый канал и удалите лишние копии после настройки.
-
-Проверка:
+Проверьте наличие полей без вывода секретов:
 
 ```bash
-jq . /root/video-node1-bootstrap.json
 chmod 600 /root/video-node1-bootstrap.json
+
+jq '{
+  node_id,
+  has_agent_token:(.agent_token|type=="string" and length>0),
+  has_media_secret:(.media_secret|type=="string" and length>0)
+}' /root/video-node1-bootstrap.json
 ```
 
-## 6. Создайте production env
+## 7. Создайте production environment
 
 ```bash
 NODE_ID="$(jq -r '.node_id' /root/video-node1-bootstrap.json)"
@@ -275,46 +450,73 @@ NODE_TOKEN="$(jq -r '.agent_token' /root/video-node1-bootstrap.json)"
 NODE_MEDIA_SECRET="$(jq -r '.media_secret' /root/video-node1-bootstrap.json)"
 
 for value in "$NODE_ID" "$NODE_TOKEN" "$NODE_MEDIA_SECRET"; do
-  test -n "$value" && test "$value" != null
- done
+  test -n "$value"
+  test "$value" != null
+done
 
-install -d -m 0750 /etc/newdomofon-video
+install -d -o root -g newdomofon -m 0750 \
+  /etc/newdomofon-video
 
 cat > /etc/newdomofon-video/app.env <<EOF
 NODE_ENV=production
-DVR_ROLE=node
+DVR_ENGINE_ROLE=node
 DVR_ENGINE_PORT=3010
 
-DVR_ROOT=/var/lib/newdomofon-video/dvr
+DVR_ROOT=${DVR_ROOT}
 FFMPEG_PATH=/usr/bin/ffmpeg
 SEGMENT_DURATION=4
 LIVE_WINDOW=8
 CAMERA_RELOAD_SECONDS=20
 CLEANUP_INTERVAL_MINUTES=60
 MAX_EXPORT_SECONDS=3600
+DVR_LIVE_PLAYLIST_WAIT_MS=10000
 
 DVR_MASTER_URL=https://${MASTER_DOMAIN}
 DVR_NODE_ID=${NODE_ID}
 DVR_NODE_TOKEN=${NODE_TOKEN}
 DVR_NODE_MEDIA_SECRET=${NODE_MEDIA_SECRET}
-
 DVR_NODE_PUBLIC_BASE_URL=https://${NODE_DOMAIN}
 DVR_NODE_INTERNAL_URL=http://${NODE_PRIVATE_IP}:3010
 DVR_REQUIRE_MEDIA_TOKEN=true
 DVR_CORS_ORIGIN=https://${MASTER_DOMAIN}
 
+# Local SQLite events.
 DVR_EVENT_DB=/var/lib/newdomofon-video/events/events.sqlite3
 DVR_EVENT_RETENTION_DAYS=30
 DVR_EVENT_CLEANUP_INTERVAL_MINUTES=60
 DVR_EVENT_QUERY_MAX_SECONDS=2678400
 DVR_EVENT_STORE_RAW_PAYLOAD=false
 
+# ONVIF/Hikvision/video motion.
 ONVIF_EVENTS_ENABLED=true
 ONVIF_EVENTS_REQUEST_TIMEOUT_MS=15000
-
 DVR_HIKVISION_EVENTS_ENABLED=false
 VIDEO_MOTION_ENABLED=false
 
+# Archive/event reconciliation. Safe dry-run by default.
+DVR_ARCHIVE_EVENT_SYNC_ENABLED=true
+DVR_ARCHIVE_EVENT_SYNC_APPLY=false
+DVR_ARCHIVE_EVENT_SYNC_MIN_AGE_MINUTES=120
+DVR_ARCHIVE_EVENT_SYNC_MAX_HOURS_PER_RUN=1000
+DVR_ARCHIVE_EVENT_SYNC_MASTER_TIMEOUT_MS=15000
+
+# Emergency DVR disk guard defaults.
+DVR_DISK_MIN_FREE_BYTES=10737418240
+DVR_DISK_MIN_FREE_PERCENT=10
+DVR_DISK_RESUME_FREE_BYTES=16106127360
+DVR_DISK_RESUME_FREE_PERCENT=15
+DVR_DISK_MIN_FREE_INODES_PERCENT=5
+DVR_DISK_RESUME_FREE_INODES_PERCENT=8
+DVR_SYSTEM_MIN_FREE_BYTES=2147483648
+DVR_SYSTEM_MIN_FREE_PERCENT=5
+DVR_SYSTEM_RESUME_FREE_BYTES=4294967296
+DVR_SYSTEM_RESUME_FREE_PERCENT=10
+DVR_DISK_MIN_ARCHIVE_AGE_MINUTES=60
+DVR_DISK_MAX_DELETE_DIRS_PER_RUN=500
+DVR_DISK_STALE_TMP_MINUTES=60
+DVR_DISK_REQUIRE_MOUNTPOINT=true
+
+# Hikvision/NVR device archive sessions.
 DVR_DEVICE_ARCHIVE_MAX_RANGE_SECONDS=300
 DVR_DEVICE_ARCHIVE_MIN_PLAYBACK_SECONDS=30
 DVR_DEVICE_ARCHIVE_SESSION_WINDOW_SECONDS=300
@@ -334,11 +536,27 @@ chown root:newdomofon /etc/newdomofon-video/app.env
 chmod 0640 /etc/newdomofon-video/app.env
 ```
 
-События не используют `BACKEND_INTERNAL_URL` и `INTERNAL_DVR_SECRET`. Они сохраняются только локально.
+### Когда `DVR_DISK_REQUIRE_MOUNTPOINT=true`
 
-`DVR_EVENT_STORE_RAW_PAYLOAD=false` уменьшает размер event database и риск сохранения лишних данных. Включайте raw payload только для ограниченной диагностики.
+Используйте `true`, если `DVR_ROOT` обязан быть отдельным смонтированным filesystem. При пропавшем mount guard остановит DVR и не позволит писать архив в root filesystem.
 
-## 7. Подготовьте права runtime-каталогов
+Если `DVR_ROOT` намеренно расположен на root filesystem, укажите:
+
+```text
+DVR_DISK_REQUIRE_MOUNTPOINT=false
+```
+
+### Роль node
+
+Актуальная переменная:
+
+```text
+DVR_ENGINE_ROLE=node
+```
+
+Даже без неё role автоматически определяется по наличию `DVR_MASTER_URL`, `DVR_NODE_ID` и `DVR_NODE_TOKEN`. Старую переменную `DVR_ROLE` использовать не следует.
+
+## 8. Подготовьте runtime-каталоги и права
 
 ```bash
 install -d -o newdomofon -g newdomofon -m 0750 \
@@ -351,39 +569,49 @@ install -d -o newdomofon -g newdomofon -m 0755 \
 chown -R newdomofon:newdomofon \
   /var/lib/newdomofon-video/dvr \
   /var/lib/newdomofon-video/events
+
+namei -l /etc/newdomofon-video/app.env
+sudo -u newdomofon test -r /etc/newdomofon-video/app.env
+echo "app_env_readable_rc=$?"
 ```
 
-Проверьте mount до запуска DVR:
+Проверьте mount:
 
 ```bash
 findmnt /var/lib/newdomofon-video/dvr
 findmnt -no SOURCE,FSTYPE,OPTIONS /var/lib/newdomofon-video/dvr
+df -hT /var/lib/newdomofon-video/dvr
+df -ih /var/lib/newdomofon-video/dvr
 ```
 
-Если отдельный диск должен быть обязательным, не запускайте сервис при отсутствии mount.
-
-## 8. Выполните deploy
+## 9. Выполните первый deploy
 
 ```bash
 cd "$NODE_DIR"
+
 PROJECT_DIR="$NODE_DIR" \
-  ENV_FILE=/etc/newdomofon-video/app.env \
+ENV_FILE=/etc/newdomofon-video/app.env \
+INSTALL_DISK_GUARD=1 \
+INSTALL_JOURNAL_LIMITS=1 \
+INSTALL_ARCHIVE_EVENT_SYNC=1 \
   bash scripts/deploy-node.sh
 ```
 
-Deploy:
+Deploy выполняет:
 
-1. устанавливает npm-зависимости DVR engine;
-2. собирает TypeScript;
-3. удаляет dev dependencies;
-4. устанавливает systemd unit;
-5. устанавливает nginx site;
-6. запускает DVR service;
-7. проверяет nginx-конфигурацию.
+1. filesystem/disk preflight;
+2. `npm ci` и TypeScript build DVR engine;
+3. удаление dev dependencies;
+4. установку DVR systemd unit;
+5. установку Nginx template;
+6. установку disk guard service/timer;
+7. установку journald limits;
+8. установку archive-event sync service/timer;
+9. initial archive-event sync в безопасном dry-run;
+10. запуск DVR, если disk guard не находится в critical;
+11. проверку Nginx config.
 
-Не запускайте `npm audit fix` автоматически на production.
-
-## 9. Укажите DNS-имя в nginx
+## 10. Укажите production domain в Nginx
 
 ```bash
 sed -i \
@@ -394,9 +622,7 @@ nginx -t
 systemctl reload nginx
 ```
 
-После каждого повторного deploy проверяйте, что `server_name` не вернулся к `_`.
-
-## 10. Выпустите TLS-сертификат
+## 11. Выпустите TLS-сертификат
 
 ```bash
 apt-get install -y certbot python3-certbot-nginx
@@ -404,273 +630,853 @@ certbot --nginx -d "$NODE_DOMAIN"
 certbot renew --dry-run
 ```
 
-## 11. Ограничьте доступ к порту 3010
+Сохраните production Nginx config:
 
-Публичным клиентам обычно достаточно nginx `80/443`. Порт `3010` разрешайте только master/private network.
+```bash
+cp -a \
+  /etc/nginx/sites-available/newdomofon-video-node.conf \
+  /root/newdomofon-video-node.nginx-with-tls.conf
+```
 
-Проверьте, что node слушает:
+> Повторный `deploy-node.sh` копирует Nginx template заново. Для обновления production используйте отдельную процедуру ниже и сравнивайте Nginx diff до замены TLS-файла.
+
+## 12. Ограничьте порт 3010
+
+Не применяйте firewall rules до проверки SSH. Разрешите `3010/tcp` только с private IP master.
+
+Проверка listener:
 
 ```bash
 ss -ltnp | grep ':3010 '
 ```
 
-Firewall должен разрешать `3010/tcp` только с IP master. Не применяйте готовый firewall-файл вслепую: сначала проверьте текущие nftables rules, чтобы не потерять SSH-доступ.
+Nginx public routes работают через `80/443`.
 
-Master может использовать:
+---
 
-```text
-DVR_NODE_INTERNAL_URL=http://NODE_PRIVATE_IP:3010
+# Подключение камер и проверка recorder
+
+Камеры создаются и назначаются только на master. Node получает config через node-agent API и команду `reload_cameras`.
+
+## Проверка heartbeat/config
+
+```bash
+journalctl \
+  -u newdomofon-video-dvr.service \
+  --since '10 minutes ago' \
+  --no-pager \
+  | grep -E 'node-agent|heartbeat|config|commands|reload' \
+  | tail -200
 ```
 
-Если прямой private connection невозможен, укажите HTTPS public URL node как fallback.
+На master node должна быть `online`, а `last_seen_at` должен обновляться.
+
+## Список recorder
+
+```bash
+curl -fsS http://127.0.0.1:3010/recorders | jq
+```
+
+Статус конкретного stream:
+
+```bash
+STREAM="entrance_main"
+
+curl -fsS \
+  "http://127.0.0.1:3010/cameras/${STREAM}/status" \
+  | jq
+```
+
+Успешный результат содержит:
+
+```json
+{
+  "recording": true,
+  "state": "recording",
+  "stream_name": "entrance_main",
+  "last_error": null
+}
+```
+
+При ошибке доступны:
+
+```text
+state
+last_error
+last_exit_code
+restarts
+next_retry_at
+credentials_injected
+```
+
+## Credentials в RTSP URI
+
+Если master передал `source_url` без `user:password@`, node использует сохранённые camera/device credentials и подставляет их только в памяти при запуске FFmpeg.
+
+Пароль не должен возвращаться через API и должен маскироваться в diagnostics.
+
+## Проверка FFmpeg processes
+
+```bash
+pgrep -fc '/usr/bin/ffmpeg'
+
+ps -eo pid,etimes,%cpu,%mem,cmd \
+  | grep '[f]fmpeg' \
+  | sed -E 's#(rtsp://)[^ @]+@#\1***:***@#g' \
+  | head -100
+```
+
+Не публикуйте полный FFmpeg command line без маскирования credentials.
+
+## Принудительная перезагрузка конфигурации
+
+Обычно не требуется:
+
+```bash
+systemctl restart newdomofon-video-dvr.service
+```
+
+После изменения камеры master сам повышает `config_generation` и ставит `reload_cameras`.
+
+---
+
+# Live, архив и MP4 export
+
+Node endpoints:
+
+```text
+GET /cameras/:stream/live.m3u8
+GET /cameras/:stream/archive.m3u8?start=...&end=...
+GET /cameras/:stream/archive/ranges?start=...&end=...
+GET /cameras/:stream/export.mp4?start=...&end=...
+GET /files/:stream/*
+GET /device-archive/:stream/:session/:file
+```
+
+Они требуют HMAC media token. Для пользовательской проверки получайте ссылку через master UI/API, а не подписывайте node token вручную.
+
+## Проверка появления live playlist локально
+
+```bash
+STREAM="entrance_main"
+
+ls -lah "/var/lib/newdomofon-video/dvr/${STREAM}/live.m3u8"
+
+sed -n '1,30p' \
+  "/var/lib/newdomofon-video/dvr/${STREAM}/live.m3u8"
+```
+
+## Последние сегменты
+
+```bash
+find "/var/lib/newdomofon-video/dvr/${STREAM}" \
+  -type f \
+  \( -name '*.ts' -o -name '*.m4s' \) \
+  -mmin -5 \
+  -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+  | sort \
+  | tail -100
+```
+
+## Проверка через master
+
+В master UI:
+
+```text
+Камеры → открыть камеру
+```
+
+или создайте managed camera link:
+
+```text
+Администрирование → Токены → Ссылки камер
+```
+
+Проверьте:
+
+```text
+live/index.m3u8
+archive ranges
+timeline seek
+preview.mp4
+```
+
+## Коды ошибок
+
+```text
+401 Missing media token
+  token не передан
+
+403 Invalid media token
+  неверная подпись, scope, stream, generation или срок действия
+
+404 Live playlist is not ready
+  recorder не создал live.m3u8
+
+404 No archive segments in selected range
+  в диапазоне нет локальных сегментов
+
+413 Requested range is too large
+  диапазон export/archive превышает MAX_EXPORT_SECONDS или route limit
+```
+
+---
+
+# ONVIF, Hikvision и video-motion события
+
+## ONVIF PullPoint
+
+Node использует локальный PullPoint collector. Он:
+
+- получает только камеры, назначенные этой node;
+- пробует SOAP 1.2 и SOAP 1.1;
+- поддерживает WS-Addressing и plain requests;
+- поддерживает UsernameToken PasswordDigest и PasswordText;
+- сохраняет события локально;
+- подавляет повторяющиеся same-state snapshots;
+- не отправляет event payload на master.
+
+Для камеры на master должны быть корректны:
+
+```text
+stream_name
+dvr_server_id
+onvif_xaddr или device host + onvif_port
+onvif_username/onvif_password или device credentials
+```
+
+Проверка collector:
+
+```bash
+journalctl \
+  -u newdomofon-video-dvr.service \
+  --since '15 minutes ago' \
+  --no-pager \
+  | grep -E '\[onvif-events|\[event-store|subscription ready|events stored locally' \
+  | tail -300
+```
+
+## Эквивалентные motion topics
+
+Одна физическая детекция может создать raw transitions по нескольким topics, например:
+
+```text
+tns1:RuleEngine/CellMotionDetector/Motion
+tns1:VideoSource/MotionAlarm
+```
+
+SQLite сохраняет raw transitions, а пользовательский logical timeline на master:
+
+- показывает активные события;
+- скрывает `false/inactive`;
+- объединяет близкие эквивалентные topics.
+
+## Hikvision events
+
+По умолчанию:
+
+```text
+DVR_HIKVISION_EVENTS_ENABLED=false
+```
+
+Включайте после проверки ISAPI/alertStream и channel mapping:
+
+```bash
+sed -i \
+  's/^DVR_HIKVISION_EVENTS_ENABLED=.*/DVR_HIKVISION_EVENTS_ENABLED=true/' \
+  /etc/newdomofon-video/app.env
+
+systemctl restart newdomofon-video-dvr.service
+```
+
+## FFmpeg video-motion detector
+
+По умолчанию выключен:
+
+```text
+VIDEO_MOTION_ENABLED=false
+```
+
+Пример для отдельных stream:
+
+```text
+VIDEO_MOTION_ENABLED=true
+VIDEO_MOTION_STREAMS=entrance_main,parking_1
+VIDEO_MOTION_SOURCE=hls
+VIDEO_MOTION_FPS=3
+VIDEO_MOTION_SCENE_THRESHOLD=0.010
+```
+
+Не включайте `*` на большой node без измерения CPU.
+
+---
+
+# SQLite event store и Event API
+
+## Файлы
+
+```text
+/var/lib/newdomofon-video/events/events.sqlite3
+/var/lib/newdomofon-video/events/events.sqlite3-wal
+/var/lib/newdomofon-video/events/events.sqlite3-shm
+```
+
+SQLite работает в WAL mode.
+
+## Health
+
+```bash
+curl -fsS http://127.0.0.1:3010/health | jq '.events'
+```
+
+Ожидается:
+
+```json
+{
+  "ok": true,
+  "storage": "sqlite",
+  "wal": true
+}
+```
+
+## Количество событий
+
+```bash
+node - <<'NODE'
+const { DatabaseSync } = require('node:sqlite');
+const db = new DatabaseSync(
+  '/var/lib/newdomofon-video/events/events.sqlite3',
+  { readOnly: true }
+);
+
+console.table(db.prepare(`
+  SELECT
+    stream_name,
+    count(*) AS events,
+    datetime(min(occurred_at_ms) / 1000, 'unixepoch') AS first_utc,
+    datetime(max(occurred_at_ms) / 1000, 'unixepoch') AS last_utc
+  FROM camera_events
+  GROUP BY stream_name
+  ORDER BY stream_name
+`).all());
+
+db.close();
+NODE
+```
+
+Предупреждение Node.js 22 о experimental `node:sqlite` не означает ошибку database.
+
+## Последние raw-события
+
+```bash
+node - <<'NODE'
+const { DatabaseSync } = require('node:sqlite');
+const db = new DatabaseSync(
+  '/var/lib/newdomofon-video/events/events.sqlite3',
+  { readOnly: true }
+);
+
+console.table(db.prepare(`
+  SELECT
+    stream_name,
+    event_type,
+    event_state,
+    topic,
+    datetime(occurred_at_ms / 1000, 'unixepoch') AS occurred_at_utc
+  FROM camera_events
+  ORDER BY occurred_at_ms DESC
+  LIMIT 100
+`).all());
+
+db.close();
+NODE
+```
+
+## Event API
+
+```text
+GET /cameras/:stream/events
+GET /cameras/:stream/events/summary
+GET /cameras/:stream/events/health
+```
+
+Без token:
+
+```bash
+curl -sS -o /tmp/events.json -w 'HTTP %{http_code}\n' \
+  http://127.0.0.1:3010/cameras/test/events
+
+cat /tmp/events.json
+```
+
+Ожидается `401`. Неверный или истёкший token возвращает `403`.
+
+## Retention
+
+```text
+DVR_EVENT_RETENTION_DAYS=30
+DVR_EVENT_CLEANUP_INTERVAL_MINUTES=60
+```
+
+Возрастная retention является верхней границей. Дополнительно archive-event synchronizer удаляет события часов, для которых локальный архив уже отсутствует.
+
+---
+
+# Синхронизация событий с существующим архивом
+
+Проблема, которую решает synchronizer:
+
+```text
+архивный час удалён
+события этого часа остались в SQLite
+timeline показывает marker, но видео отсутствует
+```
+
+Worker каждые пять минут проверяет завершённые часы локального архива. Если у local/node camera за час нет `.ts` или `.m4s`, события этой камеры за тот же час могут быть удалены.
+
+Камеры с `archive_storage=device` исключаются.
+
+## Безопасность synchronizer
+
+Он не удаляет события, если:
+
+- `DVR_ARCHIVE_EVENT_SYNC_ENABLED=false`;
+- `DVR_ARCHIVE_EVENT_SYNC_APPLY=false`;
+- master недоступен;
+- DVR mount отсутствует при обязательном mount;
+- disk guard находится в critical;
+- час моложе `DVR_ARCHIVE_EVENT_SYNC_MIN_AGE_MINUTES`;
+- в каталоге есть playable segment.
+
+По умолчанию:
+
+```text
+DVR_ARCHIVE_EVENT_SYNC_APPLY=false
+```
+
+Timer работает в dry-run и только формирует отчёт.
+
+## Состояние
+
+```bash
+cat \
+  /var/lib/newdomofon-video/events/archive-event-sync-state.json \
+  | jq
+```
+
+Поля:
+
+```text
+mode
+authoritative_master
+local_streams
+archive_hours_checked
+missing_archive_hours
+candidate_events
+deleted_events
+examples
+```
+
+## Ручной dry-run
+
+```bash
+sudo -u newdomofon bash -c '
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+
+exec /usr/bin/node \
+  /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs \
+  --dry-run
+' \
+  > /tmp/archive-event-sync-dry-run.json \
+  2> /tmp/archive-event-sync-dry-run.err
+
+RC=$?
+echo "dry_run_rc=$RC"
+
+if [ "$RC" -eq 0 ]; then
+  jq . /tmp/archive-event-sync-dry-run.json
+else
+  cat /tmp/archive-event-sync-dry-run.err
+fi
+```
+
+Dry-run должен показывать:
+
+```json
+{
+  "mode": "dry-run",
+  "deleted_events": 0
+}
+```
+
+## Dry-run одной камеры
+
+```bash
+sudo -u newdomofon bash -c '
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+
+exec /usr/bin/node \
+  /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs \
+  --dry-run \
+  --stream entrance_main
+' | jq
+```
+
+## Проверьте каталоги-кандидаты
+
+```bash
+jq -r '.examples[].archive_directory' \
+  /tmp/archive-event-sync-dry-run.json \
+  | while IFS= read -r dir; do
+      if [ -d "$dir" ]; then
+        segments="$(find "$dir" -maxdepth 1 -type f \
+          \( -name '*.ts' -o -name '*.m4s' \) | wc -l)"
+        echo "EXISTS segments=$segments $dir"
+      else
+        echo "MISSING $dir"
+      fi
+    done
+```
+
+## Backup SQLite перед первым apply
+
+```bash
+DB="/var/lib/newdomofon-video/events/events.sqlite3"
+BACKUP_DIR="/var/lib/newdomofon-video/events/backups"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DB="$BACKUP_DIR/events-before-archive-sync-$STAMP.sqlite3"
+
+install -d -o newdomofon -g newdomofon -m 0750 \
+  "$BACKUP_DIR"
+
+sudo -u newdomofon \
+  /usr/bin/node - "$DB" "$BACKUP_DB" <<'NODE'
+const { DatabaseSync } = require('node:sqlite');
+const source = process.argv[2];
+const destination = process.argv[3];
+const db = new DatabaseSync(source);
+const escaped = destination.replaceAll("'", "''");
+db.exec(`VACUUM INTO '${escaped}'`);
+db.close();
+console.log(destination);
+NODE
+
+ls -lh "$BACKUP_DB"
+```
+
+## Контролируемый apply одной камеры
+
+```bash
+sudo -u newdomofon bash -c '
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+
+exec /usr/bin/node \
+  /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs \
+  --apply \
+  --stream entrance_main
+' | tee /tmp/archive-event-sync-apply.json
+
+jq . /tmp/archive-event-sync-apply.json
+```
+
+## Включение автоматического apply
+
+Только после проверки dry-run и backup:
+
+```bash
+sed -i \
+  's/^DVR_ARCHIVE_EVENT_SYNC_APPLY=.*/DVR_ARCHIVE_EVENT_SYNC_APPLY=true/' \
+  /etc/newdomofon-video/app.env
+
+systemctl start newdomofon-video-archive-event-sync.service
+
+cat \
+  /var/lib/newdomofon-video/events/archive-event-sync-state.json \
+  | jq
+```
+
+Timer:
+
+```bash
+systemctl enable --now \
+  newdomofon-video-archive-event-sync.timer
+
+systemctl list-timers \
+  newdomofon-video-archive-event-sync.timer \
+  --no-pager
+```
+
+## Немедленный возврат в dry-run
+
+```bash
+sed -i \
+  's/^DVR_ARCHIVE_EVENT_SYNC_APPLY=.*/DVR_ARCHIVE_EVENT_SYNC_APPLY=false/' \
+  /etc/newdomofon-video/app.env
+
+systemctl start newdomofon-video-archive-event-sync.service
+```
+
+---
+
+# Защита от заполнения диска
+
+Node disk guard запускается systemd timer каждую минуту.
+
+## Что проверяется
+
+- filesystem `DVR_ROOT`;
+- свободные bytes;
+- свободные inode;
+- filesystem SQLite/event database;
+- root/system filesystem;
+- обязательный mountpoint;
+- stale export/device-archive temp directories.
+
+## Порог по умолчанию
+
+Аварийная очистка начинается, если свободно меньше:
+
+```text
+max(10 GiB, 10% размера DVR filesystem)
+```
+
+То есть на крупном диске очистка начинается примерно при **90% заполнения**.
+
+Очистка продолжается до:
+
+```text
+max(15 GiB, 15% размера DVR filesystem)
+```
+
+То есть целевое заполнение после очистки на крупном диске — примерно **85%**.
+
+Inode:
+
+```text
+critical: <5% свободных inode
+resume:   >=8%
+```
+
+Root/event filesystem:
+
+```text
+critical: max(2 GiB, 5%)
+resume:   max(4 GiB, 10%)
+```
+
+## Что удаляется
+
+1. stale export temp directories;
+2. stale device-archive sessions;
+3. самые старые завершённые часовые каталоги архива;
+4. пустые parent date directories.
+
+Не удаляются:
+
+- текущий UTC-час;
+- каталоги моложе `DVR_DISK_MIN_ARCHIVE_AGE_MINUTES`;
+- SQLite database;
+- `app.env`;
+- recorder configuration;
+- архив произвольных путей вне ожидаемого шаблона.
+
+За один проход удаляется не больше:
+
+```text
+DVR_DISK_MAX_DELETE_DIRS_PER_RUN=500
+```
+
+500 каталогов — это не 500 общих часов. При 10 камерах один час может состоять из 10 каталогов.
+
+## Если места освободить не удалось
+
+Guard:
+
+1. останавливает `newdomofon-video-dvr.service`;
+2. создаёт `/run/newdomofon-video/node-disk-paused`;
+3. оставляет node в critical;
+4. автоматически запускает DVR после восстановления resume watermark.
+
+Это предотвращает запись до 100% и повреждение SQLite/root filesystem.
+
+## Состояние guard
+
+```bash
+cat /run/newdomofon-video/node-disk-state.json | jq
+
+systemctl status \
+  newdomofon-video-node-disk-guard.timer \
+  --no-pager -l
+
+journalctl \
+  -u newdomofon-video-node-disk-guard.service \
+  -n 300 --no-pager
+```
+
+Полезные поля:
+
+```text
+state
+reason
+available_bytes
+used_percent
+inode_free_percent
+required_start_bytes
+required_resume_bytes
+deleted_archive_directories
+```
+
+## Какие каталоги были удалены
+
+```bash
+journalctl \
+  -t newdomofon-node-disk-guard \
+  --since '7 days ago' \
+  --no-pager \
+  | grep -E 'disk pressure|emergency archive cleanup removed|stopping|disk recovered'
+```
+
+## Более плотное хранение: 95% / 92%
+
+Если вы осознанно хотите хранить больше архива и принимаете меньший запас:
+
+```text
+DVR_DISK_MIN_FREE_BYTES=10737418240
+DVR_DISK_MIN_FREE_PERCENT=5
+DVR_DISK_RESUME_FREE_BYTES=16106127360
+DVR_DISK_RESUME_FREE_PERCENT=8
+DVR_DISK_MAX_DELETE_DIRS_PER_RUN=50
+DVR_DISK_MIN_ARCHIVE_AGE_MINUTES=180
+```
+
+Для крупных дисков это приблизительно:
+
+```text
+очистка начинается: 95% заполнения
+останавливается:    92% заполнения
+```
+
+После изменения:
+
+```bash
+systemctl restart newdomofon-video-node-disk-guard.timer
+systemctl start newdomofon-video-node-disk-guard.service || true
+cat /run/newdomofon-video/node-disk-state.json | jq
+```
+
+Не устанавливайте start/resume одинаковыми: hysteresis предотвращает постоянное включение/выключение recorder.
+
+## Проверка mount protection
+
+```bash
+mountpoint -q /var/lib/newdomofon-video/dvr
+echo "mountpoint_rc=$?"
+
+grep '^DVR_DISK_REQUIRE_MOUNTPOINT=' \
+  /etc/newdomofon-video/app.env
+```
+
+Если mount обязателен и пропал, DVR должен оставаться остановленным до возврата диска.
+
+---
 
 # Проверка после установки
 
-## 12. Проверка сервиса и health
+## Services и timers
 
 ```bash
 systemctl is-enabled newdomofon-video-dvr.service
 systemctl is-active newdomofon-video-dvr.service
-systemctl status newdomofon-video-dvr.service --no-pager -l | head -40
+systemctl is-active newdomofon-video-node-disk-guard.timer
+systemctl is-active newdomofon-video-archive-event-sync.timer
 
+systemctl status newdomofon-video-dvr.service --no-pager -l
+systemctl list-timers --no-pager \
+  | grep -E 'newdomofon-video-(node-disk-guard|archive-event-sync)'
+```
+
+## Health
+
+```bash
 curl -fsS http://127.0.0.1:3010/health | jq
 curl -kfsS "https://${NODE_DOMAIN}/health" | jq
 ```
 
-Health должен содержать:
+Ожидается:
 
 ```json
 {
   "ok": true,
   "service": "dvr-engine",
   "mode": "node",
-  "recording_enabled": true,
-  "events": {
-    "ok": true,
-    "storage": "sqlite",
-    "wal": true
-  }
+  "recording_enabled": true
 }
 ```
 
-## 13. Проверка SQLite event store
+## Порты
 
 ```bash
-ls -lah /var/lib/newdomofon-video/events/
-
-node - <<'NODE'
-const { DatabaseSync } = require('node:sqlite');
-const db = new DatabaseSync(
-  '/var/lib/newdomofon-video/events/events.sqlite3',
-  { readOnly: true }
-);
-
-const health = db.prepare(`
-  SELECT
-    count(*) AS total_events,
-    min(occurred_at_ms) AS first_event_ms,
-    max(occurred_at_ms) AS last_event_ms
-  FROM camera_events
-`).get();
-
-console.log(health);
-db.close();
-NODE
+ss -ltnp | grep -E ':(80|443|3010)([[:space:]]|$)'
 ```
 
-Предупреждение Node.js о том, что `node:sqlite` experimental, ожидаемо для Node.js 22 и не означает ошибку базы.
-
-## 14. Проверка связи с master
+## Диск
 
 ```bash
-journalctl -u newdomofon-video-dvr.service \
-  --since '10 minutes ago' \
-  --no-pager \
-  | grep -E 'node-agent|heartbeat|config|commands' \
-  | tail -100
+df -hT / /var/lib/newdomofon-video/dvr /var/lib/newdomofon-video/events
+df -ih / /var/lib/newdomofon-video/dvr /var/lib/newdomofon-video/events
+findmnt /var/lib/newdomofon-video/dvr
+journalctl --disk-usage
 ```
 
-На master node должна иметь:
+## Heartbeat на master
 
-```text
-status=online
-last_seen_at обновляется
-camera_count соответствует назначению
-```
-
-Если heartbeat отвечает `401`, проверьте `DVR_NODE_ID` и `DVR_NODE_TOKEN`. После ротации token обновите node env и перезапустите сервис.
-
-## 15. Назначьте камеры
-
-Камеры назначаются на master через UI/API. Node получает их через:
-
-```text
-GET /api/node-agent/config
-```
-
-После назначения можно принудительно перезапустить сервис:
+На master:
 
 ```bash
-systemctl restart newdomofon-video-dvr.service
+curl -fsS \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  "https://${MASTER_DOMAIN}/api/dvr-servers" \
+  | jq '.items[] | {name,status,last_seen_at,camera_count,storage,capabilities}'
 ```
 
-Проверьте recorder processes без вывода RTSP credentials:
+## Events и archive sync
 
 ```bash
-pgrep -fc '/usr/bin/ffmpeg'
+cat /run/newdomofon-video/node-disk-state.json | jq
 
-systemctl status newdomofon-video-dvr.service \
-  --no-pager \
-  | sed -E 's#(rtsp://)[^ @]+@#\1***:***@#g' \
-  | head -80
+cat \
+  /var/lib/newdomofon-video/events/archive-event-sync-state.json \
+  | jq
 ```
 
-Никогда не публикуйте полный `systemctl status`, если в FFmpeg command line присутствуют пароли камер.
+---
 
-# ONVIF events
+# Безопасное обновление production
 
-Node использует единый PullPoint collector `v301-node-local-pullpoint`.
+## Важно
 
-Он:
+Обновление node не должно:
 
-- получает только назначенные node камеры;
-- пробует SOAP 1.2 и SOAP 1.1;
-- пробует WS-Addressing и plain requests;
-- поддерживает UsernameToken PasswordDigest и PasswordText;
-- сохраняет события локально;
-- дедуплицирует повторения;
-- фильтрует повторяющиеся state snapshots;
-- не отправляет payload на master.
+- изменять master;
+- удалять `/var/lib/newdomofon-video/dvr`;
+- удалять `/var/lib/newdomofon-video/events`;
+- перезаписывать `app.env`;
+- форматировать archive disk;
+- слепо заменять production Nginx config с Certbot TLS.
 
-## Требования к камере
-
-На master для камеры должны быть корректны:
-
-```text
-onvif_xaddr или device_host/onvif_port
-onvif_username
-onvif_password
-stream_name
-назначение dvr_server_id
-```
-
-На камере должны быть включены нужные события: motion, line crossing, intrusion и другие.
-
-## Проверка collector
+## 1. Создайте backup
 
 ```bash
-journalctl -u newdomofon-video-dvr.service \
-  --since '10 minutes ago' \
-  --no-pager \
-  | grep -E '\[onvif-events:v3\]|\[event-store\]' \
-  | tail -300
-```
-
-Ожидаются:
-
-```text
-[event-store] initialized
-[onvif-events:v3] enabled
-[onvif-events:v3] camera loop started
-[onvif-events:v3] subscription ready
-[onvif-events:v3] events stored locally
-```
-
-После движения перед камерой:
-
-```bash
-journalctl -u newdomofon-video-dvr.service \
-  --since '3 minutes ago' \
-  --no-pager \
-  | grep -E 'events stored locally|camera loop failed|subscription ready'
-```
-
-Последние события:
-
-```bash
-node - <<'NODE'
-const { DatabaseSync } = require('node:sqlite');
-const db = new DatabaseSync(
-  '/var/lib/newdomofon-video/events/events.sqlite3',
-  { readOnly: true }
-);
-
-const rows = db.prepare(`
-  SELECT
-    stream_name,
-    event_type,
-    event_state,
-    topic,
-    datetime(occurred_at_ms / 1000, 'unixepoch') AS occurred_at
-  FROM camera_events
-  ORDER BY occurred_at_ms DESC
-  LIMIT 50
-`).all();
-
-console.table(rows);
-db.close();
-NODE
-```
-
-# Event API
-
-Node endpoints:
-
-```text
-GET /cameras/:streamName/events
-GET /cameras/:streamName/events/summary
-GET /cameras/:streamName/events/health
-```
-
-Они требуют короткоживущий HMAC token со scope `events`.
-
-Без token ожидается:
-
-```bash
-curl -sS -o /tmp/events.json -w 'HTTP %{http_code}\n' \
-  "http://127.0.0.1:3010/cameras/test/events"
-cat /tmp/events.json
-```
-
-Ожидается HTTP `401`. Неверный/истёкший token возвращает `403`.
-
-Постоянные camera/live/archive tokens не дают доступ к event API.
-
-# Hikvision и video motion
-
-Hikvision events по умолчанию отключены:
-
-```text
-DVR_HIKVISION_EVENTS_ENABLED=false
-```
-
-Включайте после проверки устройства и channel mapping:
-
-```bash
-sed -i \
-  's/^DVR_HIKVISION_EVENTS_ENABLED=.*/DVR_HIKVISION_EVENTS_ENABLED=true/' \
-  /etc/newdomofon-video/app.env
-systemctl restart newdomofon-video-dvr.service
-```
-
-FFmpeg scene detector также выключен по умолчанию. Для выбранных потоков:
-
-```text
-VIDEO_MOTION_ENABLED=true
-VIDEO_MOTION_STREAMS=stream1,stream2
-VIDEO_MOTION_SOURCE=hls
-VIDEO_MOTION_FPS=3
-VIDEO_MOTION_SCENE_THRESHOLD=0.010
-```
-
-Video-motion потребляет дополнительные CPU. Не включайте `*` на большой node без измерения нагрузки.
-
-# Обновление существующей node
-
-Обновление node не должно изменять master и не должно удалять archive/event database.
-
-```bash
-set -Eeuo pipefail
+set +e
+set +u
+set +E
+set +o pipefail
 
 PROJECT="/opt/newdomofon-video-node"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -679,6 +1485,11 @@ BACKUP="/opt/newdomofon-video-migration-backups/node-update-$STAMP"
 install -d -m 0750 "$BACKUP"
 
 cp -a /etc/newdomofon-video "$BACKUP/etc-newdomofon-video"
+cp -a /etc/nginx/sites-available/newdomofon-video-node.conf \
+  "$BACKUP/nginx.conf"
+cp -a /etc/systemd/system/newdomofon-video-dvr.service \
+  "$BACKUP/" 2>/dev/null || true
+
 git -C "$PROJECT" status --short > "$BACKUP/git-status.txt"
 git -C "$PROJECT" rev-parse HEAD > "$BACKUP/git-commit.txt"
 git -C "$PROJECT" diff --binary > "$BACKUP/worktree.patch" || true
@@ -686,41 +1497,129 @@ git -C "$PROJECT" diff --binary > "$BACKUP/worktree.patch" || true
 if [ -d "$PROJECT/dvr-engine/dist" ]; then
   cp -a "$PROJECT/dvr-engine/dist" "$BACKUP/dist-before"
 fi
+```
 
+Создайте SQLite backup через `VACUUM INTO`, если обновление затрагивает event store:
+
+```bash
+DB="/var/lib/newdomofon-video/events/events.sqlite3"
+BACKUP_DB="$BACKUP/events.sqlite3"
+
+sudo -u newdomofon \
+  /usr/bin/node - "$DB" "$BACKUP_DB" <<'NODE'
+const { DatabaseSync } = require('node:sqlite');
+const source = process.argv[2];
+const destination = process.argv[3];
+const db = new DatabaseSync(source);
+const escaped = destination.replaceAll("'", "''");
+db.exec(`VACUUM INTO '${escaped}'`);
+db.close();
+NODE
+```
+
+## 2. Обновите checkout
+
+```bash
 git -C "$PROJECT" stash push -u \
   -m "production-before-node-update-$STAMP" || true
 
 git -C "$PROJECT" fetch origin main
 git -C "$PROJECT" switch main
-git -C "$PROJECT" pull --ff-only origin main
+git -C "$PROJECT" reset --hard origin/main
 
+git -C "$PROJECT" log -1 --oneline
+```
+
+## 3. Disk preflight
+
+```bash
+NEWDOMOFON_ENV_FILE=/etc/newdomofon-video/app.env \
+  bash "$PROJECT/scripts/node-system-disk-check.sh" || true
+
+if [ ! -e /run/newdomofon-video/node-disk-paused ]; then
+  NEWDOMOFON_ENV_FILE=/etc/newdomofon-video/app.env \
+    bash "$PROJECT/scripts/node-disk-guard.sh"
+fi
+
+cat /run/newdomofon-video/node-disk-state.json | jq
+
+test ! -e /run/newdomofon-video/node-disk-paused
+```
+
+## 4. Соберите до restart
+
+```bash
 cd "$PROJECT/dvr-engine"
 npm ci --include=dev
 npm run build
 npm prune --omit=dev
-
-systemctl restart newdomofon-video-dvr.service
-
-for i in $(seq 1 60); do
-  curl -fsS http://127.0.0.1:3010/health && break
-  sleep 1
-done
 ```
 
-После обновления:
+## 5. Обновите units/helpers
 
 ```bash
-git -C "$PROJECT" log -1 --oneline
-git -C "$PROJECT" status --short
-curl -fsS http://127.0.0.1:3010/health | jq
+install -m 0644 \
+  "$PROJECT/deploy/systemd/newdomofon-video-dvr.service" \
+  /etc/systemd/system/newdomofon-video-dvr.service
+
+PROJECT_DIR="$PROJECT" INSTALL_JOURNAL_LIMITS=1 \
+  bash "$PROJECT/scripts/install-node-disk-guard.sh"
+
+PROJECT_DIR="$PROJECT" ENV_FILE=/etc/newdomofon-video/app.env \
+  bash "$PROJECT/scripts/install-archive-event-sync.sh"
+
+systemctl daemon-reload
+```
+
+## 6. Nginx diff
+
+```bash
+diff -u \
+  /etc/nginx/sites-available/newdomofon-video-node.conf \
+  "$PROJECT/deploy/nginx/newdomofon-video-node.conf" || true
+```
+
+Переносите новые `location` вручную либо заново применяйте domain/TLS после backup. Не заменяйте Certbot config вслепую.
+
+## 7. Перезапустите DVR
+
+```bash
+if [ ! -e /run/newdomofon-video/node-disk-paused ]; then
+  systemctl restart newdomofon-video-dvr.service
+else
+  echo 'DVR remains stopped because disk guard is critical'
+fi
+
+for i in $(seq 1 60); do
+  if curl -fsS http://127.0.0.1:3010/health >/tmp/node-health.json; then
+    break
+  fi
+  sleep 1
+done
+
+jq . /tmp/node-health.json
 journalctl -u newdomofon-video-dvr.service -n 200 --no-pager
 ```
 
-Не применяйте старый stash обратно, пока не сравните его с новым `main`.
+Не применяйте старый stash автоматически.
 
-# Backup
+---
 
-## Конфигурация
+# Backup, восстановление и перенос диска
+
+## Что сохранять
+
+```text
+/etc/newdomofon-video/
+/etc/nginx/sites-available/newdomofon-video-node.conf
+/etc/systemd/system/newdomofon-*.service
+/etc/systemd/system/newdomofon-*.timer
+/var/lib/newdomofon-video/events/
+текущий Git commit
+archive data по отдельной политике
+```
+
+## Консистентный backup event database с остановкой
 
 ```bash
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -730,64 +1629,57 @@ install -d -m 0700 "$BACKUP"
 cp -a /etc/newdomofon-video "$BACKUP/"
 git -C /opt/newdomofon-video-node rev-parse HEAD \
   > "$BACKUP/git-commit.txt"
-```
 
-## Event database
-
-Для консистентной простой копии остановите DVR на короткое время:
-
-```bash
 systemctl stop newdomofon-video-dvr.service
-
-cp -a /var/lib/newdomofon-video/events \
-  "$BACKUP/events"
-
+cp -a /var/lib/newdomofon-video/events "$BACKUP/events"
 systemctl start newdomofon-video-dvr.service
-curl -fsS http://127.0.0.1:3010/health
+
+curl -fsS http://127.0.0.1:3010/health | jq
 ```
 
-Копируйте вместе `events.sqlite3`, `-wal` и `-shm`, если сервис не остановлен. Предпочтителен backup при остановленном сервисе.
+Если копируете без остановки, обязательно копируйте `events.sqlite3`, `-wal` и `-shm` вместе. Предпочтительнее `VACUUM INTO`.
 
 ## Видеоархив
 
-Архив обычно слишком велик для полного ежедневного backup. Используйте:
+Полный ежедневный backup многотерабайтного архива обычно дорог. Используйте:
 
-- RAID не как замену backup, а как защиту от отказа диска;
+- RAID как защиту от отказа диска, но не как замену backup;
 - репликацию критичных камер;
-- отдельное объектное/файловое хранилище;
-- проверку SMART и свободного места;
-- регулярный тест восстановления.
+- объектное/файловое хранилище;
+- SMART monitoring;
+- spare disk;
+- регулярный test restore.
 
-# Перенос архивного диска
+## Перенос архивного диска
 
 ```bash
 systemctl stop newdomofon-video-dvr.service
+systemctl stop newdomofon-video-node-disk-guard.timer
 
 rsync -aHAX --numeric-ids --info=progress2 \
   /var/lib/newdomofon-video/dvr/ \
   /mnt/new-disk/dvr/
 
-# Затем смонтируйте новый диск в /var/lib/newdomofon-video/dvr.
+# Проверьте destination перед изменением mount.
+du -sh /var/lib/newdomofon-video/dvr /mnt/new-disk/dvr
+
+# Смонтируйте новый filesystem в DVR_ROOT.
 findmnt /var/lib/newdomofon-video/dvr
 chown -R newdomofon:newdomofon /var/lib/newdomofon-video/dvr
 
-systemctl start newdomofon-video-dvr.service
-curl -fsS http://127.0.0.1:3010/health
+systemctl start newdomofon-video-node-disk-guard.timer
+systemctl start newdomofon-video-node-disk-guard.service || true
+
+if [ ! -e /run/newdomofon-video/node-disk-paused ]; then
+  systemctl start newdomofon-video-dvr.service
+fi
+
+curl -fsS http://127.0.0.1:3010/health | jq
 ```
 
-Не используйте `rsync --delete`, пока не проверена правильность source/destination.
+Не используйте `rsync --delete`, пока source/destination не проверены.
 
-# Rollback
-
-Не удаляйте:
-
-```text
-/etc/newdomofon-video/app.env
-/var/lib/newdomofon-video/dvr
-/var/lib/newdomofon-video/events
-```
-
-Откат к предыдущему commit:
+## Rollback к предыдущему commit
 
 ```bash
 PROJECT="/opt/newdomofon-video-node"
@@ -810,7 +1702,9 @@ for i in $(seq 1 60); do
 done
 ```
 
-Если новый код изменил SQLite schema, перед откатом используйте backup event database.
+Если новая версия изменила SQLite schema, перед rollback восстановите совместимый backup.
+
+---
 
 # Диагностика
 
@@ -818,96 +1712,218 @@ done
 
 ```bash
 systemctl status newdomofon-video-dvr.service --no-pager -l
-journalctl -u newdomofon-video-dvr.service -n 300 --no-pager
+journalctl -u newdomofon-video-dvr.service -n 500 --no-pager
 ```
 
-## Диск
+## Node offline / heartbeat 401
+
+Проверьте:
 
 ```bash
-df -hT /var/lib/newdomofon-video/dvr
-df -ih /var/lib/newdomofon-video/dvr
-du -sh /var/lib/newdomofon-video/dvr
-lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS
-```
+sudo -u newdomofon bash -c '
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+printf "MASTER=%s\n" "$DVR_MASTER_URL"
+printf "NODE_ID=%s\n" "$DVR_NODE_ID"
+printf "NODE_TOKEN_LENGTH=%s\n" "${#DVR_NODE_TOKEN}"
+printf "MEDIA_SECRET_LENGTH=%s\n" "${#DVR_NODE_MEDIA_SECRET}"
+'
 
-## FFmpeg
-
-```bash
-pgrep -fc '/usr/bin/ffmpeg'
-ps -eo pid,etimes,%cpu,%mem,cmd \
-  | grep '[f]fmpeg' \
-  | sed -E 's#(rtsp://)[^ @]+@#\1***:***@#g' \
-  | head -50
-```
-
-## Последние записанные сегменты
-
-```bash
-find /var/lib/newdomofon-video/dvr \
-  -type f \
-  -name '*.ts' \
-  -mmin -2 \
-  -printf '%TY-%Tm-%Td %TH:%TM:%TS %p\n' \
-  | tail -50
-```
-
-## Сеть до master
-
-```bash
-curl -kfsS "https://${MASTER_DOMAIN}/api/health"
+curl -kfsS "https://${MASTER_DOMAIN}/api/health" | jq
 getent ahosts "$MASTER_DOMAIN"
 timedatectl status
 ```
 
-## Ошибки media token
+После ротации agent token обновите `DVR_NODE_TOKEN` и перезапустите DVR.
 
-- `401 Missing media token` — token не передан;
-- `403 Invalid media token` — неверный secret, scope, stream name, version или истёкший token;
-- `503 Node inactive` — отсутствует действующая activation lease/config;
-- `503 Node event storage is unavailable` на master — master не может подключиться к node event API.
+## Live 404 / recording=false
 
-Проверьте совпадение `media_secret` в master и `/etc/newdomofon-video/app.env` node.
+```bash
+STREAM="entrance_main"
 
-# Безопасность
+curl -fsS \
+  "http://127.0.0.1:3010/cameras/${STREAM}/status" \
+  | jq
 
-- Не публикуйте RTSP/ONVIF URL и FFmpeg command lines без редактирования credentials.
-- Используйте отдельные сложные пароли камер.
-- Ограничьте ONVIF/RTSP сети firewall-правилами.
-- Не открывайте `3010/tcp` всему интернету.
-- Используйте HTTPS для публичного node URL.
-- Храните agent token и media secret с правами `0640 root:newdomofon`.
-- После ротации credentials перезапускайте node и проверяйте heartbeat.
-- Не храните raw event payload без необходимости.
-- Не удаляйте archive/event storage при обновлении Git checkout.
+journalctl \
+  -u newdomofon-video-dvr.service \
+  --since '15 minutes ago' \
+  --no-pager \
+  | grep -F "$STREAM" \
+  | tail -300
+```
 
-# Добавление второй и последующих node
+Типичные `last_error`:
+
+```text
+401 Unauthorized        неверный RTSP/ONVIF password
+Connection refused      неправильный RTSP port или RTSP выключен
+Connection timed out    нет маршрута/firewall до камеры
+404 Not Found           неправильный RTSP path
+Invalid data found      повреждённый/неподдерживаемый stream
+```
+
+## Preview на master возвращает 502
+
+Если master journal содержит:
+
+```text
+Node preview export failed (403): Invalid media token
+```
+
+убедитесь, что node обновлена до версии, где broad `camera` scope включает `export`, и пересоберите DVR engine.
+
+Другие причины:
+
+- нет archive range;
+- camera recorder не пишет;
+- node offline;
+- media secret не совпадает.
+
+## Нет событий
+
+```bash
+journalctl \
+  -u newdomofon-video-dvr.service \
+  --since '15 minutes ago' \
+  --no-pager \
+  | grep -E 'onvif-events|event-store|subscription|PullPoint|401|timeout' \
+  | tail -400
+```
+
+Проверьте ONVIF port, credentials, время камеры и включённые analytics events.
+
+## Disk guard остановил DVR
+
+```bash
+cat /run/newdomofon-video/node-disk-state.json | jq
+cat /run/newdomofon-video/node-disk-paused 2>/dev/null || true
+
+df -hT /var/lib/newdomofon-video/dvr
+df -ih /var/lib/newdomofon-video/dvr
+
+journalctl \
+  -t newdomofon-node-disk-guard \
+  --since '24 hours ago' \
+  --no-pager
+```
+
+Не удаляйте pause marker вручную, пока filesystem не достиг resume watermark. Guard снимет marker и запустит DVR автоматически.
+
+## Архив удалён, events остались
+
+```bash
+cat \
+  /var/lib/newdomofon-video/events/archive-event-sync-state.json \
+  | jq
+
+grep '^DVR_ARCHIVE_EVENT_SYNC_APPLY=' \
+  /etc/newdomofon-video/app.env
+```
+
+Если `APPLY=false`, synchronizer только сообщает candidates. Проверьте dry-run, создайте SQLite backup и включите apply.
+
+## Проверка дисков и SMART
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,MODEL,SERIAL
+df -hT /var/lib/newdomofon-video/dvr
+df -ih /var/lib/newdomofon-video/dvr
+du -xhd1 /var/lib/newdomofon-video/dvr | sort -h | tail -30
+```
+
+Для SMART:
+
+```bash
+apt-get install -y smartmontools
+smartctl -a /dev/sdb
+```
+
+## Nginx
+
+```bash
+nginx -t
+nginx -T 2>/dev/null \
+  | grep -nE 'server_name|3010|/cameras/|/files/|/device-archive/' \
+  | head -200
+
+journalctl -u nginx -n 200 --no-pager
+```
+
+---
+
+# Безопасность и масштабирование
+
+## Security checklist
+
+- Не публикуйте `3010/tcp` всему интернету.
+- Используйте HTTPS для public node URL.
+- Ограничьте SSH административными IP и используйте ключи.
+- Храните `app.env` с правами `0640 root:newdomofon`.
+- Не публикуйте bootstrap JSON, agent token и media secret.
+- Не публикуйте RTSP/ONVIF URI и FFmpeg command line без маскирования.
+- Используйте уникальные passwords камер.
+- Разделите camera VLAN, management VLAN и public access.
+- Разрешайте RTSP/ONVIF только нужным node.
+- Синхронизируйте время.
+- Не включайте raw event payload без необходимости.
+- Не удаляйте archive/event storage при Git update.
+- Регулярно проверяйте SMART, disk guard и restore.
+- После утечки credentials выполните rotation на master и обновите node env.
+
+## Вторая и последующие node
 
 Для каждой node:
 
 1. создайте отдельную запись на master;
 2. получите уникальные `node_id`, `agent_token`, `media_secret`;
-3. используйте отдельный DNS/public URL;
-4. создайте отдельный `app.env`;
-5. назначьте только её камеры;
-6. проверьте heartbeat, live, archive и events;
-7. не копируйте credentials от другой node.
+3. используйте отдельный `app.env`;
+4. используйте отдельный private IP;
+5. желательно используйте отдельный public DNS;
+6. назначьте только её камеры;
+7. проверьте heartbeat, recorder, live, archive, events, preview;
+8. не копируйте SQLite/archive другой node без плановой миграции;
+9. не используйте credentials другой node.
 
-# Правила разработки
+## Миграция камеры между node
 
-Все изменения data plane выполняются только в:
+Рекомендуемый порядок:
+
+1. проверить доступ новой node к RTSP/ONVIF;
+2. назначить камеру новой node на master;
+3. дождаться `recording=true` на новой node;
+4. проверить live/archive/events;
+5. убедиться, что старая node получила reload и остановила recorder;
+6. переносить старый архив отдельно, если он нужен.
+
+Смена назначения не переносит физические архивные файлы автоматически.
+
+---
+
+# Разработка и разделение репозиториев
+
+Data plane изменяется только в:
 
 ```text
 https://github.com/rirodevdom/newdomofon-video-node
 ```
 
-Master-код не копируется в node. Общими являются только versioned contracts.
+Control plane изменяется только в:
 
-Порядок изменения API:
+```text
+https://github.com/rirodevdom/newdomofon-video-master
+```
 
-1. обновить contract;
-2. обеспечить обратно совместимую поддержку master;
-3. обновить node;
-4. выполнить production verification;
-5. удалить legacy API только отдельным major change.
+Правила:
+
+- не подключать node к PostgreSQL master;
+- не копировать master backend в node;
+- не создавать общий production checkout;
+- общими считать только versioned contracts;
+- сначала добавлять backward compatibility на master;
+- затем обновлять node;
+- выполнять production verification;
+- удалять legacy API только отдельным major change.
 
 Старый объединённый monorepo не является источником production-кода.
