@@ -17,6 +17,7 @@ import { startHikvisionEventCollector } from './hikvisionEvents.js';
 import { startDeviceArchiveIndexer } from './deviceArchiveIndexer.js';
 import { startVideoMotionDetector, stopAllVideoMotionDetectors } from './videoMotionDetector.js';
 import { registerArchiveExportRoute } from './archiveExport.js';
+import { registerLiveTsRelayRoutes } from './liveTsRelay.js';
 import { requireMediaToken, rewritePlaylistForNode } from './mediaAuth.js';
 import { heartbeat, isNodeMode, pollCommands } from './nodeClient.js';
 import {
@@ -43,6 +44,7 @@ app.use((req, res, next) => {
   return next();
 });
 app.use(morgan('combined'));
+registerLiveTsRelayRoutes(app);
 registerArchiveExportRoute(app);
 initializeLocalEventStore();
 registerLocalEventRoutes(app);
@@ -184,7 +186,7 @@ app.get('/cameras/:streamName/device-archive/session', requireMediaToken(['archi
 
 app.get('/cameras/:streamName/device-archive/ranges', requireMediaToken(['archive']), async (req, res, next) => {
   try {
-    const range = parseRange(req, res, maxDeviceArchiveRangesSeconds);
+    const range = parseRange(req, res);
     if (!range) return;
     const items = await listDeviceArchiveRanges(req.params.streamName, range.start, range.end);
     res.setHeader('cache-control', 'no-store');
