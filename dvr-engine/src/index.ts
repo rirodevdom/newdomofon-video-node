@@ -186,7 +186,7 @@ app.get('/cameras/:streamName/device-archive/session', requireMediaToken(['archi
 
 app.get('/cameras/:streamName/device-archive/ranges', requireMediaToken(['archive']), async (req, res, next) => {
   try {
-    const range = parseRange(req, res);
+    const range = parseRange(req, res, maxDeviceArchiveRangesSeconds);
     if (!range) return;
     const items = await listDeviceArchiveRanges(req.params.streamName, range.start, range.end);
     res.setHeader('cache-control', 'no-store');
