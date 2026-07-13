@@ -80,10 +80,10 @@ async function handleLiveTs(req: Request, res: Response): Promise<void> {
     const stop = () => {
       if (stopped) return;
       stopped = true;
-      if (child.exitCode === null && !child.killed) {
+      if (child.exitCode === null) {
         try { child.kill('SIGTERM'); } catch { /* ignored */ }
         setTimeout(() => {
-          if (child.exitCode === null && !child.killed) {
+          if (child.exitCode === null) {
             try { child.kill('SIGKILL'); } catch { /* ignored */ }
           }
         }, 3000).unref?.();
