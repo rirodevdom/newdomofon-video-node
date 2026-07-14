@@ -1,9 +1,9 @@
 name: Apply Moscow timezone README update
 
 on:
-  push:
+  pull_request:
     branches:
-      - docs/moscow-timezone
+      - main
 
 permissions:
   contents: write
