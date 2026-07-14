@@ -162,7 +162,7 @@ Debian 12 x86_64
 Node.js 22
 FFmpeg
 Nginx
-синхронизированное время
+московское время Europe/Moscow на master и всех node
 ```
 
 ## Расчёт архива
@@ -294,7 +294,7 @@ export BOOTSTRAP_FILE="/root/video-node1-bootstrap.json"
 export MASTER_DOMAIN="new-video.domofon-37.ru"
 ```
 
-## 2. Обновите Debian
+## 2. Обновите Debian и установите московское время
 
 ```bash
 apt-get update
@@ -309,10 +309,20 @@ reboot
 cat /etc/debian_version
 uname -a
 
-timedatectl set-timezone UTC
+timedatectl set-timezone Europe/Moscow
 systemctl enable --now systemd-timesyncd
 timedatectl status
+date '+%Y-%m-%d %H:%M:%S %Z %z'
 ```
+
+Ожидаемая временная зона:
+
+```text
+Time zone: Europe/Moscow
+MSK +0300
+```
+
+Master и все video node должны использовать московское время (`Europe/Moscow`), чтобы временные метки архивных каталогов, событий и журналов совпадали. После изменения временной зоны перезапуск DVR service не требуется.
 
 ## 3. Подготовьте отдельный DVR-диск
 
@@ -1021,7 +1031,7 @@ curl -vk "$DVR_MASTER_URL/api/health"
 journalctl -u newdomofon-video-dvr.service --since "15 minutes ago" --no-pager
 ```
 
-Проверьте `DVR_NODE_ID`, `DVR_NODE_TOKEN`, DNS, время и TLS.
+Проверьте `DVR_NODE_ID`, `DVR_NODE_TOKEN`, DNS, московское время и TLS.
 
 ## Recorder не запускается
 
@@ -1073,7 +1083,7 @@ journalctl -u newdomofon-video-archive-event-sync.service -n 200 --no-pager
 - не публикуйте bootstrap JSON и `app.env`;
 - разрешайте `3010/tcp` только master;
 - используйте private network или VPN между master и node;
-- синхронизируйте время;
+- используйте `Europe/Moscow` на master и всех node и синхронизируйте время;
 - после утечки выполните rotation node credentials на master;
 - не храните credentials камер в shell history;
 - `DVR_DISK_REQUIRE_MOUNTPOINT=true` защищает root filesystem при пропавшем DVR mount;
