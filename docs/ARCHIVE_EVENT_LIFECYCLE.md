@@ -1,37 +1,46 @@
-# Archive and event lifecycle synchronization
+# Синхронизация событий с локальным архивом
 
-Camera events are stored in the node SQLite database independently from video archive files. Without synchronization, deleting an archive hour can leave event markers at times where playback is no longer possible.
+События хранятся в SQLite node независимо от media files. После удаления archive-hour каталога event marker может остаться на timeline, хотя воспроизведение уже невозможно.
 
-`newdomofon-video-archive-event-sync.timer` runs every five minutes and starts a one-shot reconciler.
+`newdomofon-video-archive-event-sync.timer` каждые пять минут запускает reconciler.
 
-The reconciler:
+Полный справочник параметров: [ENVIRONMENT.md](ENVIRONMENT.md#5-синхронизация-событий-с-архивом).
 
-- obtains the current assigned camera configuration from master;
-- processes only cameras whose `archive_storage` is not `device`;
-- ignores recent hours to avoid racing the active recorder;
-- checks whether the local archive hour contains a completed `.ts` or `.m4s` segment;
-- removes SQLite events only for completed hours whose local archive is absent;
-- never modifies events for Hikvision/NVR device archive cameras;
-- uses SQLite WAL with a busy timeout and a passive checkpoint;
-- writes machine-readable state to `archive-event-sync-state.json` beside the event database.
+## Что делает reconciler
 
-Default settings:
+- получает актуальную camera configuration с master;
+- обрабатывает только камеры, где `archive_storage != device`;
+- не трогает свежие часы, чтобы не конфликтовать с recorder;
+- проверяет наличие завершённых `.ts`/`.m4s` segment;
+- удаляет SQLite events только для завершённых часов, локальный архив которых отсутствует;
+- не меняет события Hikvision/NVR device archive cameras;
+- использует SQLite WAL, busy timeout и passive checkpoint;
+- пишет machine-readable state рядом с event database.
+
+Если master недоступен или конфигурация не получена, reconciler работает **fail-closed** и ничего не удаляет.
+
+## Production-параметры
 
 ```env
+# Включить timer/reconciler.
 DVR_ARCHIVE_EVENT_SYNC_ENABLED=true
+
+# false = только отчёт, true = удаление orphan events.
 DVR_ARCHIVE_EVENT_SYNC_APPLY=false
+
+# Не проверять часы моложе двух часов.
 DVR_ARCHIVE_EVENT_SYNC_MIN_AGE_MINUTES=120
+
+# Максимум camera-hour buckets за один запуск.
 DVR_ARCHIVE_EVENT_SYNC_MAX_HOURS_PER_RUN=1000
+
+# Timeout получения camera config с master.
 DVR_ARCHIVE_EVENT_SYNC_MASTER_TIMEOUT_MS=15000
 ```
 
-`DVR_ARCHIVE_EVENT_SYNC_APPLY=false` is the safe rollout default. The timer runs automatically but only reports orphan events. No rows are deleted until an operator explicitly sets the value to `true`.
-
-The installer also ensures that `/etc/newdomofon-video` is traversable only by root and the `newdomofon` group, and that `app.env` remains mode `0640`.
+`DVR_ARCHIVE_EVENT_SYNC_APPLY=false` — обязательный безопасный режим первого запуска.
 
 ## Dry-run
-
-Dry-run does not delete anything:
 
 ```bash
 sudo -u newdomofon bash -c '
@@ -42,39 +51,45 @@ exec /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs 
 '
 ```
 
-For one camera:
+Для одного stream:
 
 ```bash
 sudo -u newdomofon bash -c '
 set -a
 . /etc/newdomofon-video/app.env
 set +a
-exec /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs --dry-run --stream OnvifP
+exec /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs \
+  --dry-run --stream entrance_main
 '
 ```
 
-Inspect `candidate_events`, `missing_archive_hours` and `examples` before applying.
+Перед apply проверьте:
 
-## Enable automatic apply
+- `archive_hours_checked`;
+- `missing_archive_hours`;
+- `candidate_events`;
+- `examples`.
 
-After reviewing the dry-run output, set:
+## Включение автоматического apply
+
+Измените:
 
 ```env
 DVR_ARCHIVE_EVENT_SYNC_APPLY=true
 ```
 
-Then run one controlled pass:
+Запустите один контролируемый проход:
 
 ```bash
 systemctl start newdomofon-video-archive-event-sync.service
-cat /var/lib/newdomofon-video/events/archive-event-sync-state.json | jq .
+cat /var/lib/newdomofon-video/events/archive-event-sync-state.json | jq
 ```
 
-The timer will use apply mode on subsequent runs. To return to report-only mode, set the value back to `false`.
+Следующие timer runs будут использовать apply mode. Для возврата в report-only установите `false`.
 
-## Manual apply
+## Разовый manual apply
 
-A one-off manual apply can be executed without changing the timer mode:
+Без изменения режима timer:
 
 ```bash
 sudo -u newdomofon bash -c '
@@ -85,26 +100,29 @@ exec /usr/bin/node /usr/local/lib/newdomofon-video/reconcile-archive-events.mjs 
 '
 ```
 
-The operation is idempotent. Repeating it does not remove additional events while matching archive segments remain.
+Операция идемпотентна: пока matching media segments существуют, повторный запуск не удаляет соответствующие events.
 
-## Status
+## Статус
 
 ```bash
 systemctl status newdomofon-video-archive-event-sync.timer --no-pager
 systemctl status newdomofon-video-archive-event-sync.service --no-pager
 journalctl -u newdomofon-video-archive-event-sync.service -n 100 --no-pager
-cat /var/lib/newdomofon-video/events/archive-event-sync-state.json | jq .
+cat /var/lib/newdomofon-video/events/archive-event-sync-state.json | jq
 ```
 
-Important fields:
+Ключевые поля:
 
-- `archive_hours_checked` — completed local archive hours inspected;
-- `missing_archive_hours` — hours without playable local segments;
-- `candidate_events` — events that would be deleted in dry-run;
-- `deleted_events` — events actually deleted in apply mode.
+| Поле | Значение |
+|---|---|
+| `archive_hours_checked` | Проверенные завершённые local archive hours. |
+| `missing_archive_hours` | Часы без playable local segments. |
+| `candidate_events` | Сколько events было бы удалено в dry-run. |
+| `deleted_events` | Сколько events реально удалено в apply. |
+| `examples` | Примеры найденных несоответствий. |
 
-## Safety boundaries
+## Границы безопасности
 
-The synchronizer deliberately works at hour granularity because emergency archive cleanup deletes hour directories. If at least one completed media segment remains in an hour, all event markers for that hour are retained.
+Reconciler работает с точностью до часа, потому что emergency disk cleanup удаляет hour-каталоги. Если в проверяемом часу остаётся хотя бы один completed playable segment, events этого часа сохраняются.
 
-The synchronizer fails closed when master configuration cannot be obtained: no events are deleted because the worker cannot safely distinguish local archive cameras from device archive cameras.
+Не включайте apply, пока не проверены dry-run результаты для всех типов камер.
