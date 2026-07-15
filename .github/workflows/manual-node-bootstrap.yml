@@ -19,7 +19,7 @@ jobs:
       - name: Validate installer interface
         run: |
           bash -n scripts/deploy-node.sh
-          scripts/deploy-node.sh --help >/tmp/deploy-node-help.txt
+          bash scripts/deploy-node.sh --help >/tmp/deploy-node-help.txt
           grep -q -- '--master-url' /tmp/deploy-node-help.txt
           grep -q -- '--node-id' /tmp/deploy-node-help.txt
           grep -q -- '--node-token' /tmp/deploy-node-help.txt
