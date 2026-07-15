@@ -4,6 +4,7 @@ umask 077
 
 PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
+REGISTRATION_FILE="${REGISTRATION_FILE:-/root/newdomofon-node-master-registration.env}"
 INSTALL_DISK_GUARD="${INSTALL_DISK_GUARD:-1}"
 INSTALL_JOURNAL_LIMITS="${INSTALL_JOURNAL_LIMITS:-1}"
 INSTALL_ARCHIVE_EVENT_SYNC="${INSTALL_ARCHIVE_EVENT_SYNC:-1}"
@@ -18,32 +19,39 @@ NON_INTERACTIVE=false
 
 usage() {
   cat <<'EOF'
-NewDomofon Video Node deployment with manual master credentials
+NewDomofon Video Node deployment with operator-defined credentials
 
-The master does not have to be online while this script runs. Create the node
-record on master beforehand, save its values, and enter them here manually.
+The node ID, agent token and media secret are chosen during node deployment.
+The master does not have to exist or be online yet. After deployment, create a
+matching node record on master and enter exactly the same values.
 
 Usage:
   sudo bash scripts/deploy-node.sh [options]
 
 Options:
-  --master-url URL       DVR_MASTER_URL
-  --node-id UUID         DVR_NODE_ID
-  --node-token TOKEN     DVR_NODE_TOKEN
-  --media-secret SECRET  DVR_NODE_MEDIA_SECRET
-  --public-url URL       DVR_NODE_PUBLIC_BASE_URL
-  --internal-url URL     DVR_NODE_INTERNAL_URL
-  --non-interactive      Fail instead of prompting for missing values
-  -h, --help             Show this help
+  --master-url URL          DVR_MASTER_URL that this node will use later
+  --node-id UUID            operator-defined DVR_NODE_ID
+  --node-token TOKEN        operator-defined DVR_NODE_TOKEN
+  --media-secret SECRET     operator-defined DVR_NODE_MEDIA_SECRET
+  --public-url URL          DVR_NODE_PUBLIC_BASE_URL
+  --internal-url URL        DVR_NODE_INTERNAL_URL
+  --registration-file PATH  root-only file for values copied into master
+  --non-interactive         fail instead of prompting for missing values
+  -h, --help                show this help
 
 Example:
   sudo bash scripts/deploy-node.sh \
     --master-url https://new-video.domofon-37.ru \
-    --node-id UUID_FROM_MASTER \
-    --node-token AGENT_TOKEN_FROM_MASTER \
-    --media-secret MEDIA_SECRET_FROM_MASTER \
+    --node-id 11111111-2222-4333-8444-555555555555 \
+    --node-token NODE_TOKEN_CHOSEN_BY_OPERATOR_32 \
+    --media-secret MEDIA_SECRET_CHOSEN_BY_OPERATOR_32 \
     --public-url http://10.106.1.31 \
     --internal-url http://10.106.1.31:3010
+
+Generate suitable values manually when needed:
+  uuidgen
+  openssl rand -hex 32
+  openssl rand -hex 32
 EOF
 }
 
@@ -55,6 +63,7 @@ while (($#)); do
     --media-secret) NODE_MEDIA_SECRET="${2:-}"; shift 2 ;;
     --public-url) NODE_PUBLIC_BASE_URL="${2:-}"; shift 2 ;;
     --internal-url) NODE_INTERNAL_URL="${2:-}"; shift 2 ;;
+    --registration-file) REGISTRATION_FILE="${2:-}"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64 ;;
@@ -122,7 +131,7 @@ PY
 
 valid_secret() {
   local value="$1"
-  [[ ${#value} -ge 16 && ${#value} -le 2048 && "$value" != *$'\n'* && "$value" != *$'\r'* ]]
+  [[ ${#value} -ge 16 && ${#value} -le 512 && "$value" =~ ^[A-Za-z0-9._~-]+$ ]]
 }
 
 prompt_value() {
@@ -167,17 +176,17 @@ case "$NODE_MEDIA_SECRET" in PASTE_*|CHANGE_*|YOUR_* ) NODE_MEDIA_SECRET="" ;; e
 case "$MASTER_URL" in *example.com* ) MASTER_URL="" ;; esac
 case "$NODE_PUBLIC_BASE_URL" in *example.com* ) NODE_PUBLIC_BASE_URL="" ;; esac
 
-prompt_value MASTER_URL "Master URL"
-prompt_value NODE_ID "Node ID created on master"
-prompt_value NODE_TOKEN "Node agent token created on master" true
-prompt_value NODE_MEDIA_SECRET "Node media secret created on master" true
-prompt_value NODE_PUBLIC_BASE_URL "Public node URL"
+prompt_value MASTER_URL "DVR_MASTER_URL to use when master becomes available"
+prompt_value NODE_ID "Choose DVR_NODE_ID (UUID)"
+prompt_value NODE_TOKEN "Choose DVR_NODE_TOKEN" true
+prompt_value NODE_MEDIA_SECRET "Choose DVR_NODE_MEDIA_SECRET" true
+prompt_value NODE_PUBLIC_BASE_URL "DVR_NODE_PUBLIC_BASE_URL"
 
 if [[ -z "$NODE_INTERNAL_URL" ]]; then
   if [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
     fail "NODE_INTERNAL_URL is required"
   fi
-  read -r -p "Internal node URL [http://127.0.0.1:3010]: " NODE_INTERNAL_URL
+  read -r -p "DVR_NODE_INTERNAL_URL [http://127.0.0.1:3010]: " NODE_INTERNAL_URL
   NODE_INTERNAL_URL="${NODE_INTERNAL_URL:-http://127.0.0.1:3010}"
 fi
 
@@ -189,8 +198,9 @@ validate_url "$MASTER_URL" || fail "Invalid DVR_MASTER_URL"
 validate_url "$NODE_PUBLIC_BASE_URL" || fail "Invalid DVR_NODE_PUBLIC_BASE_URL"
 validate_url "$NODE_INTERNAL_URL" || fail "Invalid DVR_NODE_INTERNAL_URL"
 validate_node_id "$NODE_ID" || fail "DVR_NODE_ID must be a UUID"
-valid_secret "$NODE_TOKEN" || fail "DVR_NODE_TOKEN must contain at least 16 characters"
-valid_secret "$NODE_MEDIA_SECRET" || fail "DVR_NODE_MEDIA_SECRET must contain at least 16 characters"
+valid_secret "$NODE_TOKEN" || fail "DVR_NODE_TOKEN must contain 16-512 safe characters: letters, digits, dot, underscore, tilde or hyphen"
+valid_secret "$NODE_MEDIA_SECRET" || fail "DVR_NODE_MEDIA_SECRET must contain 16-512 safe characters: letters, digits, dot, underscore, tilde or hyphen"
+[[ -n "$REGISTRATION_FILE" && "$REGISTRATION_FILE" = /* ]] || fail "REGISTRATION_FILE must be an absolute path"
 
 set_env_value NODE_ENV production
 set_env_value DVR_ENGINE_ROLE node
@@ -210,6 +220,19 @@ else
   chown root:root "$ENV_FILE"
   chmod 0600 "$ENV_FILE"
 fi
+
+install -d -m 0700 "$(dirname "$REGISTRATION_FILE")"
+cat >"$REGISTRATION_FILE" <<EOF
+# Copy these exact values into Administration -> Nodes -> Create node on master.
+DVR_MASTER_URL=${MASTER_URL}
+DVR_NODE_ID=${NODE_ID}
+DVR_NODE_TOKEN=${NODE_TOKEN}
+DVR_NODE_MEDIA_SECRET=${NODE_MEDIA_SECRET}
+DVR_NODE_PUBLIC_BASE_URL=${NODE_PUBLIC_BASE_URL}
+DVR_NODE_INTERNAL_URL=${NODE_INTERNAL_URL}
+EOF
+chown root:root "$REGISTRATION_FILE"
+chmod 0600 "$REGISTRATION_FILE"
 
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
   NEWDOMOFON_ENV_FILE="$ENV_FILE" bash "$PROJECT_DIR/scripts/node-system-disk-check.sh" || true
@@ -278,9 +301,11 @@ done
 curl -fsS --max-time 3 http://127.0.0.1:3010/health || fail "Local DVR health check failed"
 echo
 
-echo "Node deployed with manually supplied credentials."
-echo "Master availability was not required during deployment."
-echo "The node will start heartbeat/config polling automatically when master becomes reachable."
+echo "Node deployed with operator-defined credentials."
+echo "Master availability and an existing master node record were not required during deployment."
+echo "Create the matching node record on master later using the exact values in:"
+echo "  $REGISTRATION_FILE"
+echo "The node will start heartbeat/config polling automatically when the matching master record exists."
 echo "Environment: $ENV_FILE"
 echo "Local health: http://127.0.0.1:3010/health"
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
