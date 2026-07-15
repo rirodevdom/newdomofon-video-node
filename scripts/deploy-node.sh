@@ -224,9 +224,22 @@ if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
 fi
 
 cd "$PROJECT_DIR/dvr-engine"
-npm ci --include=dev
-npm run build
-npm prune --omit=dev
+(
+  # app.env and command-line secrets remain protected by the outer umask 077,
+  # but runtime packages must be readable by the systemd user newdomofon.
+  umask 022
+  npm ci --include=dev
+  npm run build
+  npm ci --omit=dev
+)
+
+[[ -r node_modules/express/index.js ]] || fail "Production dependency express is missing after npm ci --omit=dev"
+node -e "import('express').then(() => console.log('Runtime dependency check: express OK'))"
+
+if id newdomofon >/dev/null 2>&1; then
+  chown -R root:newdomofon node_modules dist
+  chmod -R g+rX,o-rwx node_modules dist
+fi
 
 install -d -o newdomofon -g newdomofon /var/lib/newdomofon-video/dvr /var/lib/newdomofon-video/events /var/log/newdomofon-video
 cp "$PROJECT_DIR/deploy/systemd/newdomofon-video-dvr.service" /etc/systemd/system/
