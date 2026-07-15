@@ -1,24 +1,26 @@
-# Установка NewDomofon Video Node одним локальным root-скриптом
+# Установка Video Node из локального архива от root
 
-Эта инструкция предназначена для Debian 12, когда архив `newdomofon-video-node`
-уже скачан на другом компьютере и распакован в каталог внутри `/root`.
+Этот сценарий предназначен для Debian 12, когда source archive уже распакован внутри `/root` и Git недоступен или не используется.
 
-Используется только один запускаемый файл:
+Рекомендуемый запускаемый файл:
 
 ```text
-scripts/install-node-local-root.sh
+scripts/install-node-manual-local-root.sh
 ```
 
-Он не выполняет `git clone`, `git fetch`, `git pull` и другие Git-команды.
-Он не вызывает `deploy-node.sh`, `install-node-disk-guard.sh`,
-`install-archive-event-sync.sh` или другие установщики.
+Он оборачивает монолитный root-only installer и принудительно использует актуальную модель:
 
-## Пользователи
+- node разворачивается первой;
+- UUID/token/media secret выбираются оператором на node;
+- master ничего не генерирует;
+- старый `--bootstrap-json` отклоняется;
+- после установки создаётся `/root/newdomofon-node-master-registration.env`.
 
-Установщик не выполняет `useradd` или `groupadd` и не создаёт Linux-пользователя
-`newdomofon`.
+Обычная production-установка через пользователя `newdomofon` предпочтительнее. Root-only вариант используйте только когда это осознанное требование.
 
-Все компоненты NewDomofon Video Node запускаются как `root`:
+## 1. Пользователи и границы
+
+Root-only installer не создаёт Linux-пользователя `newdomofon`. От root запускаются:
 
 ```text
 newdomofon-video-dvr.service
@@ -26,67 +28,21 @@ newdomofon-video-node-disk-guard.service
 newdomofon-video-archive-event-sync.service
 ```
 
-Nginx сохраняет стандартного Debian worker-пользователя `www-data`. Этот аккаунт
-создаётся пакетом Nginx, а не самим установщиком.
+Nginx worker остаётся `www-data`. PostgreSQL на node не устанавливается и не используется.
 
-Node не устанавливает и не использует PostgreSQL.
-
----
-
-# 1. Подготовьте node на master
-
-На master откройте:
-
-```text
-Администрирование → Nodes → Добавить node
-```
-
-Сохраните:
-
-```text
-node_id
-agent_token
-media_secret
-```
-
-Можно создать файл:
-
-```bash
-cat >/root/video-node1-bootstrap.json <<'JSON'
-{
-  "node_id": "ВСТАВЬТЕ_NODE_ID",
-  "agent_token": "ВСТАВЬТЕ_AGENT_TOKEN",
-  "media_secret": "ВСТАВЬТЕ_MEDIA_SECRET"
-}
-JSON
-
-chmod 600 /root/video-node1-bootstrap.json
-```
-
-Монолитный установщик автоматически найдёт файл с `bootstrap` в имени либо
-использует путь, переданный через `--bootstrap-json`.
-
----
-
-# 2. Подготовьте DVR-диск
-
-Установщик **не форматирует диски автоматически**, потому что это может уничтожить
-данные.
-
-Проверьте диски:
+## 2. Подготовьте archive disk
 
 ```bash
 lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,MODEL,SERIAL
 ```
 
-Если используется отдельный уже подготовленный раздел:
+Для уже подготовленного раздела:
 
 ```bash
 DVR_PARTITION=/dev/sdb1
 DVR_ROOT=/var/lib/newdomofon-video/dvr
 
 install -d -m 0750 "$DVR_ROOT"
-
 DVR_UUID="$(blkid -s UUID -o value "$DVR_PARTITION")"
 test -n "$DVR_UUID"
 
@@ -99,29 +55,17 @@ df -hT "$DVR_ROOT"
 df -ih "$DVR_ROOT"
 ```
 
-Если раздел новый и пустой, его форматирование выполняется отдельно и осознанно:
+`mkfs.ext4` выполняйте только для нового пустого раздела: команда уничтожает существующие данные.
 
-```bash
-mkfs.ext4 -L NEWDOMOFON_DVR /dev/sdb1
-```
-
-Эта команда уничтожает существующие данные на разделе.
-
-Для обязательного отдельного mount запускайте installer с:
+Используйте:
 
 ```text
 --require-mountpoint
 ```
 
-Если архив намеренно хранится на системном диске:
+если архивный диск обязателен. `--allow-root-filesystem` допустим только при осознанном хранении архива на system disk.
 
-```text
---allow-root-filesystem
-```
-
----
-
-# 3. Распакуйте архив node
+## 3. Распакуйте source
 
 Пример:
 
@@ -135,357 +79,177 @@ mkfs.ext4 -L NEWDOMOFON_DVR /dev/sdb1
 SOURCE_DIR=/root/newdomofon-video-node-main
 
 test -f "$SOURCE_DIR/dvr-engine/package.json"
-test -f "$SOURCE_DIR/dvr-engine/package-lock.json"
+test -f "$SOURCE_DIR/scripts/install-node-manual-local-root.sh"
 test -f "$SOURCE_DIR/scripts/install-node-local-root.sh"
 test -f "$SOURCE_DIR/scripts/node-disk-guard.sh"
-
-echo "Source is ready: $SOURCE_DIR"
 ```
 
-Имя папки не имеет значения.
+## 4. Подготовьте operator-defined credentials
 
----
+```bash
+NODE_ID="$(uuidgen)"
+NODE_TOKEN="$(openssl rand -hex 32)"
+NODE_MEDIA_SECRET="$(openssl rand -hex 32)"
+```
 
-# 4. Запустите один файл
+Значения используются как:
+
+```text
+DVR_NODE_ID
+DVR_NODE_TOKEN
+DVR_NODE_MEDIA_SECRET
+```
+
+Token и media secret: `16–512` символов `A-Z a-z 0-9 . _ ~ -`.
+
+## 5. Интерактивная установка
 
 ```bash
 cd /root/newdomofon-video-node-main
 
-chmod 700 scripts/install-node-local-root.sh
-
-bash scripts/install-node-local-root.sh
-```
-
-Сценарий запросит недостающие параметры:
-
-```text
-Master URL
-node_id
-agent_token
-media_secret
-private node IP/hostname
-```
-
-Если `app.env` уже существует или найден bootstrap JSON, соответствующие вопросы
-не задаются.
-
-## Рекомендуемый неинтерактивный запуск
-
-Пример для текущей сети:
-
-```bash
-bash /root/newdomofon-video-node-main/scripts/install-node-local-root.sh \
-  --source-dir /root/newdomofon-video-node-main \
-  --master-url https://new-video.domofon-37.ru \
-  --master-ip 10.106.1.30 \
-  --bootstrap-json /root/video-node1-bootstrap.json \
+bash scripts/install-node-manual-local-root.sh \
   --node-host 10.106.1.31 \
+  --master-ip 10.106.1.30 \
   --dvr-root /var/lib/newdomofon-video/dvr \
   --require-mountpoint \
   --no-tls
 ```
 
-Здесь:
-
-```text
-master       https://new-video.domofon-37.ru
-master IP    10.106.1.30
-node IP      10.106.1.31
-internal URL http://10.106.1.31:3010
-public URL   http://10.106.1.31
-```
-
-## Без bootstrap JSON
-
-```bash
-bash /root/newdomofon-video-node-main/scripts/install-node-local-root.sh \
-  --source-dir /root/newdomofon-video-node-main \
-  --master-url https://new-video.domofon-37.ru \
-  --master-ip 10.106.1.30 \
-  --node-id 'UUID_FROM_MASTER' \
-  --node-token 'AGENT_TOKEN_FROM_MASTER' \
-  --media-secret 'MEDIA_SECRET_FROM_MASTER' \
-  --node-host 10.106.1.31 \
-  --dvr-root /var/lib/newdomofon-video/dvr \
-  --require-mountpoint \
-  --no-tls
-```
-
-Не добавляйте секреты в общедоступные журналы и сообщения.
-
-## Node с отдельным DNS и TLS
-
-```bash
-bash /root/newdomofon-video-node-main/scripts/install-node-local-root.sh \
-  --source-dir /root/newdomofon-video-node-main \
-  --master-url https://new-video.domofon-37.ru \
-  --master-ip 10.106.1.30 \
-  --bootstrap-json /root/video-node1-bootstrap.json \
-  --node-host 10.106.1.31 \
-  --node-domain video-node1.example.ru \
-  --email admin@example.ru \
-  --dvr-root /var/lib/newdomofon-video/dvr \
-  --require-mountpoint \
-  --tls
-```
-
-Для private node отдельный DNS/TLS не обязателен.
-
----
-
-# Что самостоятельно делает один файл
-
-Сценарий:
-
-1. проверяет запуск от `root`;
-2. автоматически находит распакованный проект внутри `/root`;
-3. не выполняет ни одной Git-команды;
-4. не создаёт собственного Linux-пользователя;
-5. устанавливает системные пакеты;
-6. устанавливает Node.js 22.12+, если он отсутствует;
-7. устанавливает `Europe/Moscow`;
-8. запускает Nginx;
-9. сохраняет старый `app.env`;
-10. выполняет online backup SQLite events;
-11. читает credentials из существующего env, bootstrap JSON, параметров или prompt;
-12. проверяет DVR filesystem и обязательный mount;
-13. проверяет свободное место системного диска;
-14. сохраняет предыдущую production-папку;
-15. копирует source из `/root` в `/opt/newdomofon-video-node` через `rsync`;
-16. исключает `.git`, `.github`, `node_modules` и старый `dist`;
-17. создаёт `/etc/newdomofon-video/app.env` с `root:root 0600`;
-18. собирает DVR engine;
-19. устанавливает DVR systemd unit с `User=root`;
-20. устанавливает disk guard service/timer с `User=root`;
-21. устанавливает archive/event sync service/timer с `User=root`;
-22. устанавливает локальные runtime scripts;
-23. устанавливает Nginx-конфигурацию;
-24. запускает disk guard до DVR;
-25. останавливает установку, если disk guard обнаружил критическое состояние;
-26. запускает DVR и ждёт `/health`;
-27. проверяет доступность master;
-28. запускает archive/event sync в dry-run или apply режиме;
-29. настраивает firewall, если UFW/firewalld уже активен;
-30. при необходимости выпускает node TLS certificate;
-31. проверяет runtime-пользователей;
-32. сохраняет credentials, URLs, mount и backup-информацию;
-33. выводит итоговый отчёт в терминал.
-
----
-
-# Повторный запуск
-
-По умолчанию повторный запуск сохраняет из существующего `app.env`:
+Wrapper запросит:
 
 ```text
 DVR_MASTER_URL
 DVR_NODE_ID
 DVR_NODE_TOKEN
 DVR_NODE_MEDIA_SECRET
-DVR_NODE_INTERNAL_URL
+```
+
+## 6. Неинтерактивная установка
+
+```bash
+cd /root/newdomofon-video-node-main
+
+bash scripts/install-node-manual-local-root.sh \
+  --source-dir /root/newdomofon-video-node-main \
+  --master-url https://new-video.domofon-37.ru \
+  --master-ip 10.106.1.30 \
+  --node-id "$NODE_ID" \
+  --node-token "$NODE_TOKEN" \
+  --media-secret "$NODE_MEDIA_SECRET" \
+  --node-host 10.106.1.31 \
+  --internal-url http://10.106.1.31:3010 \
+  --public-url http://10.106.1.31 \
+  --dvr-root /var/lib/newdomofon-video/dvr \
+  --require-mountpoint \
+  --archive-event-sync-dry-run \
+  --no-tls
+
+unset NODE_ID NODE_TOKEN NODE_MEDIA_SECRET
+```
+
+Для node с собственным DNS/TLS добавьте:
+
+```text
+--node-domain video-node1.example.ru
+--email admin@example.ru
+--tls
+```
+
+## 7. Что делает installer
+
+- устанавливает Debian packages и Node.js 22;
+- задаёт `Europe/Moscow`;
+- сохраняет старый `app.env` и SQLite backup;
+- копирует source из `/root` в `/opt/newdomofon-video-node` без Git metadata;
+- создаёт `root:root 0600` runtime env;
+- собирает DVR engine;
+- устанавливает root systemd units;
+- устанавливает Nginx, disk guard и archive/event sync;
+- проверяет mount/free space;
+- запускает локальный health;
+- настраивает firewall/TLS при необходимости;
+- создаёт registration file для master.
+
+Master может быть выключен. Недоступность master не должна останавливать локальный DVR.
+
+## 8. Файлы после установки
+
+```text
+/etc/newdomofon-video/app.env
+/root/newdomofon-node-master-registration.env
+/root/newdomofon-node-access.txt
+/root/newdomofon-node-access.json
+/root/newdomofon-node-local-root-*.log
+/opt/newdomofon-video-migration-backups/local-root-node-*
+```
+
+Все access/config files содержат secrets и должны иметь `0600`.
+
+## 9. Создайте запись на master
+
+```bash
+cat /root/newdomofon-node-master-registration.env
+```
+
+В master откройте:
+
+```text
+Администрирование → Ноды → Создать node
+```
+
+Введите посимвольно:
+
+```text
+DVR_MASTER_URL
+DVR_NODE_ID
+DVR_NODE_TOKEN
+DVR_NODE_MEDIA_SECRET
 DVR_NODE_PUBLIC_BASE_URL
-DVR_ROOT
-DVR_DISK_REQUIRE_MOUNTPOINT
-DVR_ARCHIVE_EVENT_SYNC_APPLY
+DVR_NODE_INTERNAL_URL
 ```
 
-Старая production-папка сохраняется как:
-
-```text
-/opt/newdomofon-video-node.before-local-root-YYYYMMDD-HHMMSS
-```
-
-Backup:
-
-```text
-/opt/newdomofon-video-migration-backups/local-root-node-YYYYMMDD-HHMMSS
-```
-
-Сценарий не удаляет DVR archive.
-
----
-
-# Данные после установки
-
-Текстовый отчёт:
-
-```bash
-cat /root/newdomofon-node-access.txt
-```
-
-JSON:
-
-```bash
-jq . /root/newdomofon-node-access.json
-```
-
-Файлы имеют права `root:root 0600` и содержат:
-
-```text
-MASTER_URL
-MASTER_ACCESS_IP
-NODE_ID
-NODE_AGENT_TOKEN
-NODE_MEDIA_SECRET
-NODE_INTERNAL_URL
-NODE_PUBLIC_BASE_URL
-NODE_HEALTH_LOCAL
-NODE_HEALTH_PUBLIC
-
-DVR_ROOT
-DVR_MOUNT_REQUIRED
-DVR_MOUNT_SOURCE
-DVR_MOUNT_FSTYPE
-DVR_TOTAL_BYTES
-DVR_AVAILABLE_BYTES
-EVENT_DATABASE
-ARCHIVE_EVENT_SYNC_APPLY
-
-SOURCE_DIRECTORY
-SOURCE_FINGERPRINT
-PROJECT_DIRECTORY
-PREVIOUS_PROJECT_BACKUP
-INSTALL_LOG
-INSTALL_BACKUP
-
-SYSTEM_USERS_CREATED_BY_INSTALLER=none
-NODE_APPLICATION_RUNTIME_USER=root
-```
-
----
-
-# Проверка
+## 10. Проверка
 
 ```bash
 systemctl is-active newdomofon-video-dvr.service
 systemctl is-active newdomofon-video-node-disk-guard.timer
 systemctl is-active newdomofon-video-archive-event-sync.timer
 systemctl is-active nginx.service
-```
 
-Health:
+curl -fsS http://127.0.0.1:3010/health | jq
+curl -fsS http://127.0.0.1:3010/recorders | jq
 
-```bash
-curl -fsS http://127.0.0.1:3010/health | jq .
-curl -fsS http://127.0.0.1/health | jq .
-```
-
-Recorder:
-
-```bash
-curl -fsS http://127.0.0.1:3010/recorders | jq .
-```
-
-Runtime users:
-
-```bash
-for service in \
-  newdomofon-video-dvr.service \
-  newdomofon-video-node-disk-guard.service \
-  newdomofon-video-archive-event-sync.service; do
-  printf '%-52s user=%s\n' \
-    "$service" \
-    "$(systemctl show -p User --value "$service")"
-done
-```
-
-Ожидается:
-
-```text
-user=root
-```
-
-Timers:
-
-```bash
-systemctl list-timers '*newdomofon*' --no-pager
-```
-
-Disk guard:
-
-```bash
-cat /run/newdomofon-video/node-disk-state.json | jq .
-```
-
-Events:
-
-```bash
-ls -lh /var/lib/newdomofon-video/events/
-cat /var/lib/newdomofon-video/events/archive-event-sync-state.json | jq .
-```
-
----
-
-# После назначения устройства
-
-На master:
-
-```text
-Устройства → нужное устройство → Редактировать
-```
-
-Выберите установленную node и место хранения архива `node`.
-
-Проверка recorder:
-
-```bash
-curl -fsS http://127.0.0.1:3010/recorders \
-  | jq '.items[] | {stream_name,recording,restarts,last_error}'
-```
-
-Проверка файлов:
-
-```bash
-find /var/lib/newdomofon-video/dvr \
-  -maxdepth 4 \
-  -type f \
-  -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
-  | sort \
-  | tail -50
-```
-
----
-
-# Интернет-зависимости
-
-Исходники проекта не загружаются с GitHub.
-
-На чистом сервере интернет всё ещё может понадобиться для:
-
-- Debian APT repositories;
-- NodeSource, если Node.js 22 отсутствует;
-- npm registry;
-- Let's Encrypt, если нужен TLS.
-
-Для полностью автономной установки нужно подготовить APT/npm cache.
-
----
-
-# Журнал ошибок
-
-Последний журнал:
-
-```bash
-LOG="$(ls -t /root/newdomofon-node-local-root-*.log | head -1)"
-echo "$LOG"
-tail -300 "$LOG"
-```
-
-DVR:
-
-```bash
-systemctl --no-pager --full status newdomofon-video-dvr.service
 journalctl -u newdomofon-video-dvr.service -n 300 --no-pager
+cat /run/newdomofon-video/node-disk-state.json | jq
 ```
 
-Disk guard:
+После создания записи master node должна стать `online`.
 
-```bash
-journalctl -u newdomofon-video-node-disk-guard.service -n 300 --no-pager
+## 11. Повторный запуск
+
+Существующий `app.env` сохраняется по умолчанию. Не меняйте ID/token/media secret действующей node без одновременного изменения записи master.
+
+Installer не удаляет DVR archive.
+
+## 12. `.env`
+
+Root-only installation использует тот же набор параметров, что обычная node, плюс marker:
+
+```text
+NODE_APPLICATION_RUNTIME_USER=root
 ```
 
-Archive/event sync:
+Полное объяснение каждой переменной: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
 
-```bash
-journalctl -u newdomofon-video-archive-event-sync.service -n 300 --no-pager
+## 13. Устаревший сценарий
+
+Не используйте для новых установок:
+
+```text
+--bootstrap-json
+UUID_FROM_MASTER
+AGENT_TOKEN_FROM_MASTER
+MEDIA_SECRET_FROM_MASTER
 ```
+
+Wrapper намеренно отклоняет `--bootstrap-json`. Master больше не является источником node credentials.
