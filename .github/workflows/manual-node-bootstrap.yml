@@ -24,11 +24,17 @@ jobs:
           grep -q -- '--node-id' /tmp/deploy-node-help.txt
           grep -q -- '--node-token' /tmp/deploy-node-help.txt
           grep -q -- '--media-secret' /tmp/deploy-node-help.txt
-          grep -q 'Master availability was not required' scripts/deploy-node.sh
-          ! grep -RIn 'pairing/status\|pairing/claim\|DVR_NODE_PAIRING_TOKEN' \
-            scripts deploy dvr-engine/src
+          grep -q -- '--registration-file' /tmp/deploy-node-help.txt
+          grep -q 'operator-defined credentials' /tmp/deploy-node-help.txt
+          grep -q 'newdomofon-node-master-registration.env' scripts/deploy-node.sh
+          grep -q 'Master availability and an existing master node record were not required' scripts/deploy-node.sh
+          ! grep -RIn 'pairing/status\|pairing/claim\|DVR_NODE_PAIRING_TOKEN\|created on master\|FROM_MASTER' \
+            scripts deploy docs dvr-engine/src
       - name: Build DVR engine
         working-directory: dvr-engine
         run: |
           npm ci
           npm run build
+          npm ci --omit=dev
+          test -r node_modules/express/index.js
+          node -e "import('express').then(() => console.log('express runtime import OK'))"
