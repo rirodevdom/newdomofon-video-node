@@ -100,9 +100,10 @@ sudo cat /root/newdomofon-node-master-registration.env
 Администрирование → Ноды → Создать node
 ```
 
-Введите значения из файла регистрации node:
+Введите все значения из файла регистрации node:
 
 ```text
+DVR_MASTER_URL
 DVR_NODE_ID
 DVR_NODE_TOKEN
 DVR_NODE_MEDIA_SECRET
@@ -112,7 +113,7 @@ DVR_NODE_INTERNAL_URL
 
 Также задайте понятное название node и включите переключатель «Активна».
 
-`DVR_MASTER_URL` в форме показывается справочно: это адрес master, на котором создаётся запись. Он не является отдельным секретом node.
+Поле `DVR_MASTER_URL` предварительно заполняется текущим адресом master, но его можно изменить так, чтобы оно посимвольно совпадало со значением в `app.env` node.
 
 Master:
 
@@ -121,7 +122,8 @@ Master:
 - не генерирует media secret;
 - сохраняет введённый UUID как `dvr_servers.id`;
 - хранит только SHA-256 хеш agent token;
-- хранит media secret для выпуска внутренних media tokens.
+- хранит media secret для выпуска внутренних media tokens;
+- сохраняет введённый `DVR_MASTER_URL` в metadata записи node.
 
 После создания записи node при следующем heartbeat станет `online`.
 
