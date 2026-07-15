@@ -1,0 +1,34 @@
+name: Manual node bootstrap
+
+on:
+  push:
+    branches:
+      - feature/deferred-node-pairing
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dvr-engine/package-lock.json
+      - name: Validate installer interface
+        run: |
+          bash -n scripts/deploy-node.sh
+          scripts/deploy-node.sh --help >/tmp/deploy-node-help.txt
+          grep -q -- '--master-url' /tmp/deploy-node-help.txt
+          grep -q -- '--node-id' /tmp/deploy-node-help.txt
+          grep -q -- '--node-token' /tmp/deploy-node-help.txt
+          grep -q -- '--media-secret' /tmp/deploy-node-help.txt
+          grep -q 'Master availability was not required' scripts/deploy-node.sh
+          ! grep -RIn 'pairing/status\|pairing/claim\|DVR_NODE_PAIRING_TOKEN' \
+            scripts deploy dvr-engine/src
+      - name: Build DVR engine
+        working-directory: dvr-engine
+        run: |
+          npm ci
+          npm run build
