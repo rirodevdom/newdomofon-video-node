@@ -1,0 +1,105 @@
+name: Manual node bootstrap
+
+on:
+  push:
+    branches:
+      - feature/deferred-node-pairing
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dvr-engine/package-lock.json
+
+      - name: Validate installer interfaces
+        run: |
+          bash -n scripts/deploy-node.sh
+          bash -n scripts/install-node-manual-local-root.sh
+
+          bash scripts/deploy-node.sh --help >/tmp/deploy-node-help.txt
+          grep -q -- '--master-url' /tmp/deploy-node-help.txt
+          grep -q -- '--node-id' /tmp/deploy-node-help.txt
+          grep -q -- '--node-token' /tmp/deploy-node-help.txt
+          grep -q -- '--media-secret' /tmp/deploy-node-help.txt
+          grep -q -- '--registration-file' /tmp/deploy-node-help.txt
+          grep -q 'operator-defined credentials' /tmp/deploy-node-help.txt
+
+          bash scripts/install-node-manual-local-root.sh --help \
+            >/tmp/local-root-help.txt
+          grep -q 'operator-defined credentials' /tmp/local-root-help.txt
+          grep -q 'rejects --bootstrap-json' /tmp/local-root-help.txt
+
+          grep -q 'newdomofon-node-master-registration.env' \
+            scripts/deploy-node.sh
+          grep -q 'Master availability and an existing master node record were not required' \
+            scripts/deploy-node.sh
+          grep -q 'obsolete for new installations' \
+            scripts/install-node-manual-local-root.sh
+
+          ! grep -RIn 'pairing/status\|pairing/claim\|DVR_NODE_PAIRING_TOKEN' \
+            scripts/deploy-node.sh \
+            scripts/install-node-manual-local-root.sh \
+            deploy/env/node.env.example \
+            docs README.md
+
+      - name: Validate deployment documentation
+        run: |
+          test -s README.md
+          test -s INSTALL_NODE_LOCAL_ROOT.md
+          test -s docs/BAREMETAL_DEBIAN12.md
+          test -s docs/MANUAL_NODE_BOOTSTRAP.md
+          test -s docs/ENVIRONMENT.md
+          test -s docs/DISK_PROTECTION.md
+          test -s docs/ARCHIVE_EVENT_LIFECYCLE.md
+
+          grep -q 'Node разворачивается' README.md
+          grep -q 'install-node-manual-local-root.sh' INSTALL_NODE_LOCAL_ROOT.md
+          grep -q 'не генерирует UUID' docs/MANUAL_NODE_BOOTSTRAP.md
+          grep -q 'Переменные окружения video node' docs/ENVIRONMENT.md
+          grep -q 'DVR_DISK_REQUIRE_MOUNTPOINT' docs/ENVIRONMENT.md
+          grep -q 'DVR_ARCHIVE_EVENT_SYNC_APPLY' docs/ENVIRONMENT.md
+
+          ! grep -q 'Подготовьте node на master' INSTALL_NODE_LOCAL_ROOT.md
+          ! grep -q 'Сначала создайте node на master' README.md
+          ! grep -q 'Получите credentials node на master' docs/BAREMETAL_DEBIAN12.md
+
+      - name: Validate node environment template
+        run: |
+          for key in \
+            NODE_ENV \
+            DVR_ENGINE_ROLE \
+            DVR_ENGINE_PORT \
+            DVR_ROOT \
+            DVR_MASTER_URL \
+            DVR_NODE_ID \
+            DVR_NODE_TOKEN \
+            DVR_NODE_MEDIA_SECRET \
+            DVR_NODE_PUBLIC_BASE_URL \
+            DVR_NODE_INTERNAL_URL \
+            DVR_REQUIRE_MEDIA_TOKEN \
+            DVR_EVENT_DB \
+            DVR_ARCHIVE_EVENT_SYNC_ENABLED \
+            DVR_DISK_MIN_FREE_BYTES \
+            DVR_DISK_REQUIRE_MOUNTPOINT \
+            DVR_DEVICE_ARCHIVE_MAX_RANGE_SECONDS; do
+            grep -q "^${key}=" deploy/env/node.env.example
+            grep -q "${key}" docs/ENVIRONMENT.md
+          done
+
+          grep -q 'Master не генерирует UUID' deploy/env/node.env.example
+          ! grep -q 'PASTE_.*_FROM_MASTER' deploy/env/node.env.example
+
+      - name: Build DVR engine and validate production runtime
+        working-directory: dvr-engine
+        run: |
+          npm ci
+          npm run build
+          npm ci --omit=dev
+          test -r node_modules/express/index.js
+          node -e "import('express').then(() => console.log('express runtime import OK'))"

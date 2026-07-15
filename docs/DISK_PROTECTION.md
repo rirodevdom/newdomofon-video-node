@@ -1,89 +1,129 @@
-# Disk pressure protection
+# Защита video node от заполнения диска
 
-The regular DVR cleanup removes archive days only after each camera retention period expires. That policy alone cannot prevent a full filesystem when bitrate, camera count, exports, or the configured retention exceed capacity.
+Обычная retention-очистка удаляет архив только после истечения срока хранения камеры. Этого недостаточно, если bitrate, число камер, exports или retention превышают ёмкость диска.
 
-`newdomofon-video-node-disk-guard.timer` adds an independent root-owned safety loop that continues to work even when the DVR process is unhealthy.
+`newdomofon-video-node-disk-guard.timer` запускает независимую root-owned проверку, которая работает даже при неисправном DVR process.
 
-## Default watermarks
+Полный справочник переменных: [ENVIRONMENT.md](ENVIRONMENT.md#6-disk-guard).
 
-- emergency cleanup starts below `10 GiB` or `10%` free on `DVR_ROOT`, whichever is larger;
-- normal recording resumes above `15 GiB` and `15%` free;
-- DVR is stopped below `5%` free inodes;
-- the filesystem containing the event SQLite database must keep at least `2 GiB` or `5%` free;
-- completed archive hour directories younger than 60 minutes and the current UTC hour are never deleted;
-- stale export/device-archive temporary directories older than 60 minutes are removed;
-- if cleanup cannot restore the start watermark, `newdomofon-video-dvr.service` is stopped;
-- after the resume watermark is restored, the timer starts the DVR automatically.
+## Пороги по умолчанию
 
-The guard never deletes `events.sqlite3`, camera configuration, secrets, or the current recording hour.
+- аварийная очистка начинается ниже `max(10 GiB, 10%)` свободного места на filesystem `DVR_ROOT`;
+- запись возобновляется только после `max(15 GiB, 15%)`;
+- DVR останавливается ниже `5%` свободных inode;
+- system filesystem с SQLite/logs/tmp должна иметь минимум `max(2 GiB, 5%)`;
+- текущий час и archive-hour каталоги моложе 60 минут не удаляются;
+- stale export/device-archive temporary files старше 60 минут удаляются;
+- если безопасно восстановить запас не удалось, `newdomofon-video-dvr.service` останавливается;
+- после достижения resume thresholds timer автоматически запускает DVR.
 
-## Installation
+Guard не удаляет:
+
+- `events.sqlite3`;
+- `app.env`;
+- camera config;
+- текущий recording hour;
+- live playlist.
+
+## Установка
+
+Обычно guard устанавливает основной deploy:
+
+```bash
+cd /opt/newdomofon-video-node
+PROJECT_DIR=/opt/newdomofon-video-node \
+ENV_FILE=/etc/newdomofon-video/app.env \
+  bash scripts/deploy-node.sh --non-interactive
+```
+
+Отдельная установка:
 
 ```bash
 cd /opt/newdomofon-video-node
 bash scripts/install-node-disk-guard.sh
 ```
 
-The installer also applies bounded journald storage. Disable that part only when the host already has a stricter central journald policy:
+Отключить изменение journald limits, если на сервере уже есть более строгая политика:
 
 ```bash
-INSTALL_JOURNAL_LIMITS=0 bash scripts/install-node-disk-guard.sh
+INSTALL_JOURNAL_LIMITS=0 \
+  bash scripts/install-node-disk-guard.sh
 ```
 
-## Recommended production environment
+## Переменные
 
-Add to `/etc/newdomofon-video/app.env`:
-
-```text
+```env
+# Аварийная очистка ниже max(bytes, percent).
 DVR_DISK_MIN_FREE_BYTES=10737418240
 DVR_DISK_MIN_FREE_PERCENT=10
+
+# Возобновление записи после max(bytes, percent).
 DVR_DISK_RESUME_FREE_BYTES=16106127360
 DVR_DISK_RESUME_FREE_PERCENT=15
+
+# Inode thresholds.
 DVR_DISK_MIN_FREE_INODES_PERCENT=5
 DVR_DISK_RESUME_FREE_INODES_PERCENT=8
+
+# Пороги system filesystem с SQLite/logs/tmp.
 DVR_SYSTEM_MIN_FREE_BYTES=2147483648
 DVR_SYSTEM_MIN_FREE_PERCENT=5
 DVR_SYSTEM_RESUME_FREE_BYTES=4294967296
 DVR_SYSTEM_RESUME_FREE_PERCENT=10
+
+# Ограничения аварийного удаления.
 DVR_DISK_MIN_ARCHIVE_AGE_MINUTES=60
 DVR_DISK_MAX_DELETE_DIRS_PER_RUN=500
 DVR_DISK_STALE_TMP_MINUTES=60
-```
 
-When `/var/lib/newdomofon-video/dvr` must be a dedicated mount, also set:
-
-```text
+# true запрещает запись на root filesystem при пропавшем archive mount.
 DVR_DISK_REQUIRE_MOUNTPOINT=true
 ```
 
-This prevents recording into the root filesystem after an archive disk fails to mount.
+Изменения вступают в силу при следующем запуске oneshot guard. Для немедленной проверки:
 
-## Status and logs
+```bash
+systemctl start newdomofon-video-node-disk-guard.service
+```
+
+## Проверка mountpoint
+
+```bash
+findmnt /var/lib/newdomofon-video/dvr
+df -hT /var/lib/newdomofon-video/dvr
+df -ih /var/lib/newdomofon-video/dvr
+```
+
+Если `DVR_DISK_REQUIRE_MOUNTPOINT=true`, а диск не смонтирован, DVR должен оставаться остановленным. Не меняйте значение на `false`, пока не убедились, что запись на system disk допустима.
+
+## Статус и журналы
 
 ```bash
 systemctl status newdomofon-video-node-disk-guard.timer --no-pager
 systemctl status newdomofon-video-node-disk-guard.service --no-pager
 journalctl -u newdomofon-video-node-disk-guard.service -n 200 --no-pager
-cat /run/newdomofon-video/node-disk-state.json | jq .
+cat /run/newdomofon-video/node-disk-state.json | jq
 ```
 
-A paused node has:
+Paused marker:
 
 ```text
 /run/newdomofon-video/node-disk-paused
 ```
 
-## Safe verification
+Не удаляйте marker вручную до устранения причины.
 
-Do not fill a production filesystem with test data. Temporarily set a start watermark slightly above the current free space and a resume watermark below it, run the oneshot service, verify that the DVR pauses, then restore the real values and run the service again.
+## Безопасная проверка
+
+Не заполняйте production filesystem тестовыми файлами. Для проверки используйте временный threshold чуть выше текущего свободного места, запустите oneshot, проверьте pause, затем восстановите production значения и запустите oneshot ещё раз.
 
 ```bash
 df -h /var/lib/newdomofon-video/dvr
 systemctl start newdomofon-video-node-disk-guard.service
-cat /run/newdomofon-video/node-disk-state.json | jq .
+cat /run/newdomofon-video/node-disk-state.json | jq
 ```
 
-## Removal
+## Удаление guard
 
 ```bash
 systemctl disable --now newdomofon-video-node-disk-guard.timer
@@ -94,3 +134,5 @@ rm -f /etc/systemd/journald.conf.d/99-newdomofon-video.conf
 systemctl daemon-reload
 systemctl try-restart systemd-journald.service || true
 ```
+
+Удаление guard на production не рекомендуется.
