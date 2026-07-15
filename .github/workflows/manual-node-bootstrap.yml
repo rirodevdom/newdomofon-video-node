@@ -58,10 +58,10 @@ jobs:
           test -s docs/DISK_PROTECTION.md
           test -s docs/ARCHIVE_EVENT_LIFECYCLE.md
 
-          grep -q 'node разворачивается первой' README.md
+          grep -q 'Node разворачивается' README.md
           grep -q 'install-node-manual-local-root.sh' INSTALL_NODE_LOCAL_ROOT.md
-          grep -q 'Master не генерирует' docs/MANUAL_NODE_BOOTSTRAP.md
-          grep -q 'Полный справочник' docs/ENVIRONMENT.md
+          grep -q 'не генерирует UUID' docs/MANUAL_NODE_BOOTSTRAP.md
+          grep -q 'Переменные окружения video node' docs/ENVIRONMENT.md
           grep -q 'DVR_DISK_REQUIRE_MOUNTPOINT' docs/ENVIRONMENT.md
           grep -q 'DVR_ARCHIVE_EVENT_SYNC_APPLY' docs/ENVIRONMENT.md
 
@@ -92,7 +92,7 @@ jobs:
             grep -q "${key}" docs/ENVIRONMENT.md
           done
 
-          grep -q 'Master does not generate them' deploy/env/node.env.example
+          grep -q 'Master не генерирует UUID' deploy/env/node.env.example
           ! grep -q 'PASTE_.*_FROM_MASTER' deploy/env/node.env.example
 
       - name: Build DVR engine and validate production runtime
