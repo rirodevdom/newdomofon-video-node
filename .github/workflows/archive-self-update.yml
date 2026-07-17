@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'update-installed-project.sh'
+      - 'docs/UPDATE_FROM_ARCHIVE.md'
       - '.github/workflows/archive-self-update.yml'
   workflow_dispatch:
 
@@ -20,6 +21,35 @@ jobs:
           grep -q 'NewDomofon Video Node' /tmp/archive-updater-help.txt
           grep -q -- '--dry-run' /tmp/archive-updater-help.txt
 
+      - name: Reject Git commands in server archive operations
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = [
+              Path('update-installed-project.sh'),
+              Path('docs/UPDATE_FROM_ARCHIVE.md'),
+          ]
+          forbidden = [
+              re.compile(r'(^|[;&|])\s*(sudo\s+)?git(\s|$)', re.IGNORECASE),
+              re.compile(r'\bgit\s+(clone|fetch|pull|switch|checkout|reset|init|status|diff|rev-parse|remote|add|commit)\b', re.IGNORECASE),
+              re.compile(r'\b(command\s+-v|which)\s+git\b', re.IGNORECASE),
+              re.compile(r'\bapt(?:-get)?\s+install[^\n]*\bgit\b', re.IGNORECASE),
+          ]
+
+          violations = []
+          for path in files:
+              for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                  if line.lstrip().startswith('#'):
+                      continue
+                  if any(pattern.search(line) for pattern in forbidden):
+                      violations.append(f'{path}:{number}: {line}')
+
+          if violations:
+              raise SystemExit('Git commands are forbidden in server update paths:\n' + '\n'.join(violations))
+          PY
+
       - name: Exercise extracted-archive dry run
         run: |
           install -d "$RUNNER_TEMP/installed-node/scripts"
@@ -31,7 +61,8 @@ jobs:
             > /tmp/archive-updater-dry-run.txt
 
           grep -q 'DRY RUN завершён' /tmp/archive-updater-dry-run.txt
-          grep -q 'Синхронизация' /tmp/archive-updater-dry-run.txt
+          grep -q 'Синхронизация файлов архива' /tmp/archive-updater-dry-run.txt
+          grep -q 'SHA-256 содержимого' /tmp/archive-updater-dry-run.txt
 
       - name: Validate safety markers
         run: |
@@ -40,6 +71,7 @@ jobs:
             grep -q 'deploy-node.sh" --non-interactive' update-installed-project.sh
           grep -q 'newdomofon-node-archive-update.lock' update-installed-project.sh
           grep -q 'node-registration.before.env' update-installed-project.sh
-          grep -q -- '--exclude=.git/' update-installed-project.sh
+          grep -q 'source_fingerprint_sha256' update-installed-project.sh
+          grep -q 'repository_access_used=false' update-installed-project.sh
           grep -q -- '--exclude=node_modules/' update-installed-project.sh
           grep -q -- '--exclude=dist/' update-installed-project.sh
