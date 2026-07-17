@@ -1,28 +1,28 @@
-# Развёртывание video node на Debian 12
+# Развёртывание video node на Debian 12 без Git
 
-Этот документ описывает **отдельный сервер video node**. На нём не запускаются master backend, PostgreSQL master или frontend.
+Этот документ описывает отдельный сервер video node. На нём не запускаются master backend, PostgreSQL master или frontend.
 
-Актуальная схема регистрации:
+Production-сервер не должен иметь доступ к репозиторию. Установка выполняется только из ZIP/TAR, заранее скачанного на другом компьютере и переданного на сервер.
 
-1. node разворачивается первой;
-2. оператор вручную задаёт UUID, agent token и media secret;
-3. node создаёт `/root/newdomofon-node-master-registration.env`;
-4. те же значения вводятся в форме создания node на master;
-5. после успешного heartbeat node становится `online`.
+## 1. Актуальная схема регистрации
 
-Подробности регистрации: [MANUAL_NODE_BOOTSTRAP.md](MANUAL_NODE_BOOTSTRAP.md).
+1. Node разворачивается первой.
+2. Оператор вручную задаёт UUID, agent token и media secret.
+3. Node создаёт `/root/newdomofon-node-master-registration.env`.
+4. Те же значения вводятся в форме создания node на master.
+5. После успешного heartbeat node становится `online`.
 
-Справочник `.env`: [ENVIRONMENT.md](ENVIRONMENT.md).
+Подробности: [MANUAL_NODE_BOOTSTRAP.md](MANUAL_NODE_BOOTSTRAP.md).
 
-## 1. Требования
+## 2. Требования
 
 ```text
 Debian 12 x86_64
+4 CPU cores и 4–8 GB RAM
 Node.js 22
 FFmpeg
 Nginx
 rsync, curl, jq, openssl, uuid-runtime
-4 CPU cores и 4–8 GB RAM — рекомендуемый минимум
 отдельный диск под /var/lib/newdomofon-video/dvr — рекомендуется
 Europe/Moscow на master и всех node
 ```
@@ -32,10 +32,10 @@ Europe/Moscow на master и всех node
 ```text
 22/tcp    SSH только с административных адресов
 3010/tcp  DVR engine только для master/private network
-80/443    только если node публикуется через собственный Nginx/TLS
+80/443    только если node публикуется через собственный Nginx
 ```
 
-## 2. Подготовка Debian
+## 3. Подготовка Debian
 
 Команды выполняются от `root`:
 
@@ -43,95 +43,33 @@ Europe/Moscow на master и всех node
 apt-get update
 apt-get dist-upgrade -y
 apt-get install -y \
-  git ca-certificates curl openssl jq rsync uuid-runtime \
-  nginx ffmpeg sqlite3
+  ca-certificates curl openssl jq rsync unzip tar \
+  python3 uuid-runtime nginx ffmpeg sqlite3
 
 timedatectl set-timezone Europe/Moscow
 systemctl enable --now systemd-timesyncd
-
-timedatectl status
-date '+%Y-%m-%d %H:%M:%S %Z %z'
 ```
 
-Установка Node.js и остальных prerequisites из репозитория:
+Git устанавливать не требуется.
+
+## 4. Передать и распаковать архив
+
+Скачайте ZIP node-проекта вне сервера, затем передайте его в `/root`.
 
 ```bash
-cd /opt/newdomofon-video-node
-bash scripts/install-debian12-prereqs.sh
+cd /root
+unzip newdomofon-video-node-main.zip
+cd /root/newdomofon-video-node-main
 ```
 
-## 3. Подготовка archive filesystem
+Не распаковывайте архив внутрь `/opt/newdomofon-video-node`.
 
-Рекомендуемый путь:
+## 5. Запустить локальный установщик
 
-```text
-/var/lib/newdomofon-video/dvr
-```
-
-Сначала определите правильный диск:
+Интерактивно:
 
 ```bash
-lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,MODEL,SERIAL
-```
-
-Следующий пример форматирует новый пустой раздел `/dev/sdb1`. Не выполняйте `mkfs`, если на диске есть данные:
-
-```bash
-mkfs.ext4 -L NEWDOMOFON_DVR /dev/sdb1
-install -d -m 0750 /var/lib/newdomofon-video/dvr
-
-DVR_UUID="$(blkid -s UUID -o value /dev/sdb1)"
-test -n "$DVR_UUID"
-
-echo "UUID=${DVR_UUID} /var/lib/newdomofon-video/dvr ext4 defaults,noatime 0 2" \
-  >>/etc/fstab
-
-mount -a
-findmnt /var/lib/newdomofon-video/dvr
-df -hT /var/lib/newdomofon-video/dvr
-df -ih /var/lib/newdomofon-video/dvr
-```
-
-При обязательном отдельном диске используйте:
-
-```text
-DVR_DISK_REQUIRE_MOUNTPOINT=true
-```
-
-## 4. Получение проекта
-
-```bash
-install -d -m 0755 /opt
-git clone \
-  https://github.com/rirodevdom/newdomofon-video-node.git \
-  /opt/newdomofon-video-node
-
-cd /opt/newdomofon-video-node
-git switch main
-git pull --ff-only origin main
-```
-
-При тестировании feature branch используйте явно зафиксированный commit и не смешивайте его с локальными изменениями.
-
-## 5. Выбор credentials на node
-
-Сгенерируйте значения локально:
-
-```bash
-NODE_ID="$(uuidgen)"
-NODE_TOKEN="$(openssl rand -hex 32)"
-NODE_MEDIA_SECRET="$(openssl rand -hex 32)"
-```
-
-Не публикуйте значения в истории тикетов или общих логах.
-
-## 6. Первый deploy
-
-### Интерактивно
-
-```bash
-cd /opt/newdomofon-video-node
-bash scripts/deploy-node.sh
+bash scripts/install-node-manual-local-root.sh
 ```
 
 Установщик запросит:
@@ -145,156 +83,105 @@ DVR_NODE_PUBLIC_BASE_URL
 DVR_NODE_INTERNAL_URL
 ```
 
-Master может быть выключен или ещё не развёрнут.
-
-### Неинтерактивно
-
-Передавайте секреты через защищённую shell session, а после запуска удалите переменные:
+Можно использовать штатный deploy напрямую:
 
 ```bash
-cd /opt/newdomofon-video-node
-
 PROJECT_DIR=/opt/newdomofon-video-node \
 ENV_FILE=/etc/newdomofon-video/app.env \
   bash scripts/deploy-node.sh \
-    --master-url https://video.example.com \
-    --node-id "$NODE_ID" \
-    --node-token "$NODE_TOKEN" \
-    --media-secret "$NODE_MEDIA_SECRET" \
-    --public-url http://10.0.0.31 \
-    --internal-url http://10.0.0.31:3010 \
+    --master-url http://10.106.1.30 \
+    --node-id 11111111-2222-4333-8444-555555555555 \
+    --node-token NODE_TOKEN_CHOSEN_BY_OPERATOR_32 \
+    --media-secret MEDIA_SECRET_CHOSEN_BY_OPERATOR_32 \
+    --public-url http://10.106.1.31 \
+    --internal-url http://10.106.1.31:3010 \
     --non-interactive
-
-unset NODE_ID NODE_TOKEN NODE_MEDIA_SECRET
 ```
 
-Deploy:
+Оба варианта используют только локальные файлы распакованного архива и не обращаются к репозиторию.
 
-- сохраняет runtime env;
-- устанавливает production dependencies с правами для `newdomofon`;
-- собирает TypeScript;
-- устанавливает systemd unit и Nginx;
-- устанавливает disk guard и archive/event sync;
-- проверяет локальный `/health`;
-- создаёт root-only файл для регистрации на master.
+## 6. Runtime-конфигурация
 
-## 7. Проверка до регистрации на master
+Рабочий файл:
+
+```text
+/etc/newdomofon-video/app.env
+```
+
+Root-only файл значений для master:
+
+```text
+/root/newdomofon-node-master-registration.env
+```
+
+Справочник: [ENVIRONMENT.md](ENVIRONMENT.md).
+
+## 7. Проверка
 
 ```bash
 systemctl is-active newdomofon-video-dvr.service
 curl -fsS http://127.0.0.1:3010/health | jq
+curl -fsS http://127.0.0.1:3010/recorders | jq
 journalctl -u newdomofon-video-dvr.service -n 200 --no-pager
+```
 
+Проверьте права registration-файла:
+
+```bash
 stat -c '%A %U:%G %n' \
   /root/newdomofon-node-master-registration.env
 ```
 
-До появления совпадающей записи на master heartbeat может возвращать `401` или `404`. Локальный DVR при этом должен оставаться `active (running)`.
+## 8. Диск архива
 
-## 8. Создание записи на master
-
-На node просмотрите root-only файл:
-
-```bash
-cat /root/newdomofon-node-master-registration.env
-```
-
-На master откройте:
+Рекомендуется монтировать отдельный filesystem в:
 
 ```text
-Администрирование → Ноды → Создать node
+/var/lib/newdomofon-video/dvr
 ```
 
-Введите посимвольно:
+Если mountpoint обязателен:
 
 ```text
-DVR_MASTER_URL
-DVR_NODE_ID
-DVR_NODE_TOKEN
-DVR_NODE_MEDIA_SECRET
-DVR_NODE_PUBLIC_BASE_URL
-DVR_NODE_INTERNAL_URL
+DVR_DISK_REQUIRE_MOUNTPOINT=true
 ```
 
-Master не генерирует эти значения. Он сохраняет UUID, SHA-256 хеш agent token и media secret.
-
-## 9. Проверка после регистрации
+Проверка:
 
 ```bash
-sleep 25
-
-journalctl \
-  -u newdomofon-video-dvr.service \
-  --since '-5 minutes' \
-  --no-pager
-
-curl -fsS http://127.0.0.1:3010/recorders | jq
-```
-
-В UI master должны обновляться `status=online` и `last_seen_at`.
-
-## 10. Отдельный DNS/TLS для node
-
-Private-only node может работать без собственного TLS, если порт 3010 доступен только master.
-
-Для собственного domain:
-
-```bash
-export NODE_DOMAIN=video-node1.example.com
-
-sed -i \
-  "s/server_name _;/server_name ${NODE_DOMAIN};/" \
-  /etc/nginx/sites-available/newdomofon-video-node.conf
-
-nginx -t
-systemctl reload nginx
-
-apt-get install -y certbot python3-certbot-nginx
-certbot --nginx -d "$NODE_DOMAIN"
-certbot renew --dry-run
-```
-
-После изменения URL обновите одинаковые значения на node и в записи master.
-
-## 11. Безопасное обновление
-
-```bash
-cd /opt/newdomofon-video-node
-
-STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP="/opt/newdomofon-video-migration-backups/node-update-$STAMP"
-install -d -m 0750 "$BACKUP"
-
-cp -a /etc/newdomofon-video/app.env "$BACKUP/app.env"
-git status --short >"$BACKUP/git-status.txt"
-git diff --binary >"$BACKUP/worktree.patch"
-git stash push -u -m "before-node-update-$STAMP" || true
-
-git fetch --prune origin
-git switch main
-git reset --hard origin/main
-
-PROJECT_DIR=/opt/newdomofon-video-node \
-ENV_FILE=/etc/newdomofon-video/app.env \
-  bash scripts/deploy-node.sh --non-interactive
-```
-
-Старый stash не восстанавливайте автоматически.
-
-## 12. Диагностика
-
-```bash
-systemctl --no-pager --full status newdomofon-video-dvr.service
-journalctl -u newdomofon-video-dvr.service -n 300 --no-pager
-curl -fsS http://127.0.0.1:3010/health | jq
-curl -fsS http://127.0.0.1:3010/recorders | jq
 cat /run/newdomofon-video/node-disk-state.json | jq
+systemctl status newdomofon-video-node-disk-guard.timer --no-pager
 ```
 
-Безопасная проверка наличия credentials без их вывода описана в [ENVIRONMENT.md](ENVIRONMENT.md).
+## 9. Обновление
 
-## 13. Root-only установка из распакованного архива
+Сначала обновляются все video node, затем master.
 
-Для основного production-сценария рекомендуется обычный `deploy-node.sh` и systemd user `newdomofon`.
+```bash
+cd /root/newdomofon-video-node-main
+bash update-installed-project.sh --dry-run
+sudo bash update-installed-project.sh
+```
 
-`install-node-local-root.sh` предназначен для специальной установки из распакованного source tree в `/root`, где сервисы работают от root. Передавайте ему **выбранные оператором** `--node-id`, `--node-token` и `--media-secret`; не используйте старый master-generated bootstrap JSON для новых установок.
+Подробно: [UPDATE_FROM_ARCHIVE.md](UPDATE_FROM_ARCHIVE.md).
+
+## 10. Production-пути
+
+```text
+/opt/newdomofon-video-node/                    установленная копия проекта
+/etc/newdomofon-video/app.env                  runtime config и secrets
+/root/newdomofon-node-master-registration.env  значения для формы master
+/var/lib/newdomofon-video/dvr/                 live и архив
+/var/lib/newdomofon-video/events/events.sqlite3
+/var/log/newdomofon-video/
+/etc/nginx/sites-available/newdomofon-video-node.conf
+/etc/systemd/system/newdomofon-video-dvr.service
+```
+
+## 11. Безопасность
+
+- не используйте Git-команды на production-сервере;
+- не публикуйте `app.env` и registration env;
+- разрешайте node `3010` только master/private network;
+- не публикуйте `DVR_NODE_TOKEN` или `DVR_NODE_MEDIA_SECRET`;
+- не запускайте `npm audit fix` автоматически на production.
