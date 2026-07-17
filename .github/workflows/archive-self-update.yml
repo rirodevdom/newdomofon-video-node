@@ -1,0 +1,45 @@
+name: Archive self-update script
+
+on:
+  pull_request:
+    paths:
+      - 'update-installed-project.sh'
+      - '.github/workflows/archive-self-update.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell syntax and help
+        run: |
+          bash -n update-installed-project.sh
+          bash update-installed-project.sh --help >/tmp/archive-updater-help.txt
+          grep -q 'NewDomofon Video Node' /tmp/archive-updater-help.txt
+          grep -q -- '--dry-run' /tmp/archive-updater-help.txt
+
+      - name: Exercise extracted-archive dry run
+        run: |
+          install -d "$RUNNER_TEMP/installed-node/scripts"
+          cp scripts/deploy-node.sh "$RUNNER_TEMP/installed-node/scripts/deploy-node.sh"
+
+          bash update-installed-project.sh \
+            --project-dir "$RUNNER_TEMP/installed-node" \
+            --dry-run \
+            > /tmp/archive-updater-dry-run.txt
+
+          grep -q 'DRY RUN завершён' /tmp/archive-updater-dry-run.txt
+          grep -q 'Синхронизация' /tmp/archive-updater-dry-run.txt
+
+      - name: Validate safety markers
+        run: |
+          grep -q 'events-before.sqlite3' update-installed-project.sh
+          grep -q 'deploy-node.sh.*--non-interactive' update-installed-project.sh || \
+            grep -q 'deploy-node.sh" --non-interactive' update-installed-project.sh
+          grep -q 'newdomofon-node-archive-update.lock' update-installed-project.sh
+          grep -q 'node-registration.before.env' update-installed-project.sh
+          grep -q -- '--exclude=.git/' update-installed-project.sh
+          grep -q -- '--exclude=node_modules/' update-installed-project.sh
+          grep -q -- '--exclude=dist/' update-installed-project.sh
