@@ -3,7 +3,13 @@ name: Archive self-update script
 on:
   pull_request:
     paths:
+      - 'README.md'
+      - 'INSTALL_NODE_LOCAL_ROOT.md'
       - 'update-installed-project.sh'
+      - 'scripts/deploy-node.sh'
+      - 'scripts/install-node-manual-local-root.sh'
+      - 'docs/BAREMETAL_DEBIAN12.md'
+      - 'docs/UPDATE_FROM_ARCHIVE.md'
       - '.github/workflows/archive-self-update.yml'
   workflow_dispatch:
 
@@ -16,9 +22,49 @@ jobs:
       - name: Validate shell syntax and help
         run: |
           bash -n update-installed-project.sh
+          bash -n scripts/deploy-node.sh
+          bash -n scripts/install-node-manual-local-root.sh
           bash update-installed-project.sh --help >/tmp/archive-updater-help.txt
+          bash scripts/deploy-node.sh --help >/tmp/deploy-node-help.txt
+          bash scripts/install-node-manual-local-root.sh --help >/tmp/local-root-installer-help.txt
           grep -q 'NewDomofon Video Node' /tmp/archive-updater-help.txt
           grep -q -- '--dry-run' /tmp/archive-updater-help.txt
+          grep -q -- '--non-interactive' /tmp/deploy-node-help.txt
+          grep -q 'operator-defined credentials' /tmp/local-root-installer-help.txt
+
+      - name: Reject Git commands in official server operations
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = [
+              Path('README.md'),
+              Path('INSTALL_NODE_LOCAL_ROOT.md'),
+              Path('update-installed-project.sh'),
+              Path('scripts/deploy-node.sh'),
+              Path('scripts/install-node-manual-local-root.sh'),
+              Path('docs/BAREMETAL_DEBIAN12.md'),
+              Path('docs/UPDATE_FROM_ARCHIVE.md'),
+          ]
+          forbidden = [
+              re.compile(r'\bgit\s+(-C|--version|clone|fetch|pull|switch|checkout|reset|init|status|diff|rev-parse|remote|add|commit|stash)\b', re.IGNORECASE),
+              re.compile(r'\b(command\s+-v|which)\s+git\b', re.IGNORECASE),
+              re.compile(r'\bapt(?:-get)?\s+install[^\n]*\bgit\b', re.IGNORECASE),
+              re.compile(r'^\s*git\s*\\?\s*$', re.IGNORECASE),
+          ]
+
+          violations = []
+          for path in files:
+              for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                  if line.lstrip().startswith('#'):
+                      continue
+                  if any(pattern.search(line) for pattern in forbidden):
+                      violations.append(f'{path}:{number}: {line}')
+
+          if violations:
+              raise SystemExit('Git commands are forbidden in server install/update paths:\n' + '\n'.join(violations))
+          PY
 
       - name: Exercise extracted-archive dry run
         run: |
@@ -31,7 +77,8 @@ jobs:
             > /tmp/archive-updater-dry-run.txt
 
           grep -q 'DRY RUN завершён' /tmp/archive-updater-dry-run.txt
-          grep -q 'Синхронизация' /tmp/archive-updater-dry-run.txt
+          grep -q 'Синхронизация файлов архива' /tmp/archive-updater-dry-run.txt
+          grep -q 'SHA-256 содержимого' /tmp/archive-updater-dry-run.txt
 
       - name: Validate safety markers
         run: |
@@ -40,6 +87,7 @@ jobs:
             grep -q 'deploy-node.sh" --non-interactive' update-installed-project.sh
           grep -q 'newdomofon-node-archive-update.lock' update-installed-project.sh
           grep -q 'node-registration.before.env' update-installed-project.sh
-          grep -q -- '--exclude=.git/' update-installed-project.sh
+          grep -q 'source_fingerprint_sha256' update-installed-project.sh
+          grep -q 'repository_access_used=false' update-installed-project.sh
           grep -q -- '--exclude=node_modules/' update-installed-project.sh
           grep -q -- '--exclude=dist/' update-installed-project.sh
