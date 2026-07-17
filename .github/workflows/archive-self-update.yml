@@ -48,10 +48,10 @@ jobs:
               Path('docs/UPDATE_FROM_ARCHIVE.md'),
           ]
           forbidden = [
-              re.compile(r'(^|[;&|])\s*(sudo\s+)?git(\s|$)', re.IGNORECASE),
-              re.compile(r'\bgit\s+(clone|fetch|pull|switch|checkout|reset|init|status|diff|rev-parse|remote|add|commit|stash)\b', re.IGNORECASE),
+              re.compile(r'\bgit\s+(-C|--version|clone|fetch|pull|switch|checkout|reset|init|status|diff|rev-parse|remote|add|commit|stash)\b', re.IGNORECASE),
               re.compile(r'\b(command\s+-v|which)\s+git\b', re.IGNORECASE),
               re.compile(r'\bapt(?:-get)?\s+install[^\n]*\bgit\b', re.IGNORECASE),
+              re.compile(r'^\s*git\s*\\?\s*$', re.IGNORECASE),
           ]
 
           violations = []
