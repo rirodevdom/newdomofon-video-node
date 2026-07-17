@@ -2,12 +2,9 @@
 set -Eeuo pipefail
 umask 077
 
-# Обновляет уже установленный NewDomofon Video Node данными из того
-# распакованного архива, в котором находится этот файл.
-#
-# Обычный запуск после распаковки ZIP/TAR из GitHub:
-#   cd /root/newdomofon-video-node-main
-#   sudo bash update-installed-project.sh
+# Обновляет установленный NewDomofon Video Node только файлами из
+# распакованного архива, в корне которого находится этот скрипт.
+# Доступ к репозиторию и команда git на сервере не требуются.
 
 SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
@@ -19,11 +16,13 @@ DRY_RUN=false
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR=""
 UPDATE_LOG=""
+SOURCE_FINGERPRINT=""
 
 usage() {
   cat <<'EOF'
-Безопасное обновление установленного NewDomofon Video Node из текущей
-распакованной папки проекта.
+Безопасное обновление NewDomofon Video Node из текущей распакованной папки.
+
+Git и доступ к репозиторию на сервере не используются.
 
 Использование:
   sudo bash update-installed-project.sh [опции]
@@ -45,6 +44,7 @@ usage() {
 
 Пример:
   cd /root/newdomofon-video-node-main
+  bash update-installed-project.sh --dry-run
   sudo bash update-installed-project.sh
 EOF
 }
@@ -82,6 +82,33 @@ copy_if_exists() {
   fi
 }
 
+calculate_source_fingerprint() {
+  python3 - "$SOURCE_ROOT" <<'PY'
+from pathlib import Path
+import hashlib
+import sys
+
+root = Path(sys.argv[1]).resolve()
+excluded = {".git", "node_modules", "dist", "__pycache__"}
+digest = hashlib.sha256()
+
+for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+    if not path.is_file():
+        continue
+    relative = path.relative_to(root)
+    if any(part in excluded for part in relative.parts):
+        continue
+    digest.update(relative.as_posix().encode("utf-8", errors="surrogateescape"))
+    digest.update(b"\0")
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    digest.update(b"\0")
+
+print(digest.hexdigest())
+PY
+}
+
 validate_source() {
   local required
   for required in \
@@ -117,21 +144,8 @@ rsync_source() {
     args+=(--dry-run)
   fi
 
-  log "Синхронизация $SOURCE_ROOT -> $PROJECT_DIR"
+  log "Синхронизация файлов архива: $SOURCE_ROOT -> $PROJECT_DIR"
   rsync "${args[@]}" "$SOURCE_ROOT/" "$PROJECT_DIR/"
-}
-
-backup_git_state() {
-  [[ -d "$PROJECT_DIR/.git" ]] || return 0
-
-  git -C "$PROJECT_DIR" rev-parse HEAD \
-    >"$BACKUP_DIR/git-head-before.txt" 2>/dev/null || true
-  git -C "$PROJECT_DIR" status --short \
-    >"$BACKUP_DIR/git-status-before.txt" 2>/dev/null || true
-  git -C "$PROJECT_DIR" diff --binary \
-    >"$BACKUP_DIR/git-working-tree-before.patch" 2>/dev/null || true
-  git -C "$PROJECT_DIR" diff --binary --cached \
-    >"$BACKUP_DIR/git-index-before.patch" 2>/dev/null || true
 }
 
 backup_project_source() {
@@ -194,6 +208,7 @@ restore_production_nginx() {
 run_deploy() {
   log "Запуск штатного deploy-node.sh"
 
+  set +e
   PROJECT_DIR="$PROJECT_DIR" \
   ENV_FILE="$ENV_FILE" \
   REGISTRATION_FILE="$REGISTRATION_FILE" \
@@ -201,8 +216,11 @@ run_deploy() {
   INSTALL_JOURNAL_LIMITS=1 \
   INSTALL_ARCHIVE_EVENT_SYNC=1 \
     bash "$PROJECT_DIR/scripts/deploy-node.sh" --non-interactive
+  local rc=$?
+  set -e
 
   restore_production_nginx
+  ((rc == 0)) || return "$rc"
 }
 
 write_marker() {
@@ -210,7 +228,9 @@ write_marker() {
 project_type=node
 updated_at=$(date --iso-8601=seconds)
 source_root=$SOURCE_ROOT
+source_fingerprint_sha256=$SOURCE_FINGERPRINT
 backup_dir=$BACKUP_DIR
+repository_access_used=false
 EOF
   chmod 0600 "$PROJECT_DIR/.installed-from-extracted-source"
 }
@@ -284,7 +304,7 @@ while (($#)); do
   esac
 done
 
-for command in python3 rsync find sort dirname curl; do
+for command in python3 rsync curl; do
   require_command "$command"
 done
 
@@ -312,7 +332,9 @@ case "$PROJECT_DIR/" in
     ;;
 esac
 
+SOURCE_FINGERPRINT="$(calculate_source_fingerprint)"
 log "Источник архива: $SOURCE_ROOT"
+log "SHA-256 содержимого: $SOURCE_FINGERPRINT"
 log "Установленный node: $PROJECT_DIR"
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -323,7 +345,7 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 [[ "$(id -u)" -eq 0 ]] || fail "Запустите скрипт от root"
-for command in flock tee systemctl nginx git; do
+for command in flock tee systemctl nginx; do
   require_command "$command"
 done
 
@@ -338,18 +360,19 @@ exec > >(tee -a "$UPDATE_LOG") 2>&1
 trap on_error ERR
 
 log "Backup: $BACKUP_DIR"
-backup_git_state
 backup_project_source
 backup_node
 
 cat >"$BACKUP_DIR/source-info.txt" <<EOF
 project_type=node
 source_root=$SOURCE_ROOT
+source_fingerprint_sha256=$SOURCE_FINGERPRINT
 project_dir=$PROJECT_DIR
 env_file=$ENV_FILE
 registration_file=$REGISTRATION_FILE
 started_at=$(date --iso-8601=seconds)
 preserve_nginx=$PRESERVE_NGINX
+repository_access_used=false
 EOF
 
 rsync_source
@@ -361,8 +384,8 @@ date --iso-8601=seconds >"$BACKUP_DIR/completed-at.txt"
 trap - ERR
 
 echo
-echo "NODE УСПЕШНО ОБНОВЛЁН"
-echo "Источник: $SOURCE_ROOT"
-echo "Проект:   $PROJECT_DIR"
-echo "Backup:   $BACKUP_DIR"
-echo "Проверка: curl -fsS http://127.0.0.1:3010/health | jq"
+echo "NODE ОБНОВЛЕНА ИЗ РАСПАКОВАННОГО АРХИВА"
+echo "Источник:    $SOURCE_ROOT"
+echo "Fingerprint: $SOURCE_FINGERPRINT"
+echo "Backup:      $BACKUP_DIR"
+echo "Git и сетевой доступ к репозиторию не использовались."
