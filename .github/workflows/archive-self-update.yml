@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'README.md'
+      - 'INSTALL_NODE_LOCAL_ROOT.md'
       - 'update-installed-project.sh'
       - 'scripts/deploy-node.sh'
       - 'scripts/install-node-manual-local-root.sh'
@@ -39,6 +40,7 @@ jobs:
 
           files = [
               Path('README.md'),
+              Path('INSTALL_NODE_LOCAL_ROOT.md'),
               Path('update-installed-project.sh'),
               Path('scripts/deploy-node.sh'),
               Path('scripts/install-node-manual-local-root.sh'),
