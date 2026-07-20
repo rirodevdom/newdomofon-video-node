@@ -1,4 +1,4 @@
-name: SmartYard snapshot route
+name: SmartYard media compatibility
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
       - 'dvr-engine/src/index.ts'
       - 'dvr-engine/package.json'
       - 'scripts/patch-smartyard-snapshot-route.py'
+      - 'scripts/patch-smartyard-archive-limit.py'
       - '.github/workflows/smartyard-snapshot.yml'
   workflow_dispatch:
 
@@ -21,13 +22,22 @@ jobs:
           cache: npm
           cache-dependency-path: dvr-engine/package-lock.json
 
-      - name: Validate patcher
+      - name: Validate runtime patchers twice
         run: |
-          python3 -m py_compile scripts/patch-smartyard-snapshot-route.py
-          python3 scripts/patch-smartyard-snapshot-route.py --project-dir "$PWD"
-          python3 scripts/patch-smartyard-snapshot-route.py --project-dir "$PWD"
+          python3 -m py_compile \
+            scripts/patch-smartyard-snapshot-route.py \
+            scripts/patch-smartyard-archive-limit.py
+
+          for _ in 1 2; do
+            python3 scripts/patch-smartyard-snapshot-route.py --project-dir "$PWD"
+            python3 scripts/patch-smartyard-archive-limit.py --project-dir "$PWD"
+          done
+
           grep -q "registerSnapshotRoute" dvr-engine/src/index.ts
           test "$(grep -c "registerSnapshotRoute(app)" dvr-engine/src/index.ts)" -eq 1
+          test "$(grep -c "const maxArchivePlaybackSeconds" dvr-engine/src/index.ts)" -eq 1
+          test "$(grep -c "parseRange(req, res, maxArchivePlaybackSeconds)" dvr-engine/src/index.ts)" -eq 1
+          grep -q 'DVR_ARCHIVE_PLAYBACK_MAX_SECONDS || 3 \* 60 \* 60' dvr-engine/src/index.ts
 
       - name: Build DVR engine
         working-directory: dvr-engine
@@ -35,8 +45,10 @@ jobs:
           npm ci --include=dev
           npm run build
 
-      - name: Validate compiled snapshot route
+      - name: Validate compiled compatibility routes
         run: |
           test -f dvr-engine/dist/snapshot.js
           grep -q 'snapshot.jpg' dvr-engine/dist/snapshot.js
           grep -q 'x-newdomofon-snapshot-source' dvr-engine/dist/snapshot.js
+          grep -q 'DVR_ARCHIVE_PLAYBACK_MAX_SECONDS' dvr-engine/dist/index.js
+          grep -q 'maxArchivePlaybackSeconds' dvr-engine/dist/index.js
