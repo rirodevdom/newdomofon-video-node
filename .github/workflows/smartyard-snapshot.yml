@@ -1,0 +1,42 @@
+name: SmartYard snapshot route
+
+on:
+  pull_request:
+    paths:
+      - 'dvr-engine/src/snapshot.ts'
+      - 'dvr-engine/src/index.ts'
+      - 'dvr-engine/package.json'
+      - 'scripts/patch-smartyard-snapshot-route.py'
+      - '.github/workflows/smartyard-snapshot.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dvr-engine/package-lock.json
+
+      - name: Validate patcher
+        run: |
+          python3 -m py_compile scripts/patch-smartyard-snapshot-route.py
+          python3 scripts/patch-smartyard-snapshot-route.py --project-dir "$PWD"
+          python3 scripts/patch-smartyard-snapshot-route.py --project-dir "$PWD"
+          grep -q "registerSnapshotRoute" dvr-engine/src/index.ts
+          test "$(grep -c "registerSnapshotRoute(app)" dvr-engine/src/index.ts)" -eq 1
+
+      - name: Build DVR engine
+        working-directory: dvr-engine
+        run: |
+          npm ci --include=dev
+          npm run build
+
+      - name: Validate compiled snapshot route
+        run: |
+          test -f dvr-engine/dist/snapshot.js
+          grep -q 'snapshot.jpg' dvr-engine/dist/snapshot.js
+          grep -q 'x-newdomofon-snapshot-source' dvr-engine/dist/snapshot.js
