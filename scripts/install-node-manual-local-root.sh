@@ -4,6 +4,7 @@ umask 077
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LEGACY_INSTALLER="$SCRIPT_DIR/install-node-local-root.sh"
+STORAGE_CONFIGURATOR="$SCRIPT_DIR/configure-node-storage-pool.sh"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 REGISTRATION_FILE="${REGISTRATION_FILE:-/root/newdomofon-node-master-registration.env}"
 
@@ -11,6 +12,8 @@ MASTER_URL="${MASTER_URL:-}"
 NODE_ID="${NODE_ID:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
 NODE_MEDIA_SECRET="${NODE_MEDIA_SECRET:-}"
+SELECT_STORAGE=false
+STORAGE_ROOTS=()
 PASSTHROUGH=()
 
 usage() {
@@ -31,10 +34,15 @@ Credential options:
   --node-token TOKEN     operator-defined DVR_NODE_TOKEN
   --media-secret SECRET  operator-defined DVR_NODE_MEDIA_SECRET
 
+Archive storage options:
+  --select-storage       interactively select several mounted filesystems
+  --storage-root PATH    add one mounted archive filesystem; may be repeated
+  --storage-roots LIST   comma-separated mounted archive filesystems
+
 The wrapper rejects --bootstrap-json because master-generated bootstrap files
 are not part of the current deployment model.
 
-Generate values when needed:
+Generate credential values when needed:
   uuidgen
   openssl rand -hex 32
   openssl rand -hex 32
@@ -57,6 +65,19 @@ while (($#)); do
       ;;
     --media-secret)
       NODE_MEDIA_SECRET="${2:-}"
+      shift 2
+      ;;
+    --select-storage)
+      SELECT_STORAGE=true
+      shift
+      ;;
+    --storage-root)
+      STORAGE_ROOTS+=("${2:-}")
+      shift 2
+      ;;
+    --storage-roots)
+      IFS=',' read -r -a roots <<<"${2:-}"
+      STORAGE_ROOTS+=("${roots[@]}")
       shift 2
       ;;
     --bootstrap-json)
@@ -82,6 +103,13 @@ done
   echo "ERROR: installer not found: $LEGACY_INSTALLER" >&2
   exit 66
 }
+
+if [[ "$SELECT_STORAGE" == true || ${#STORAGE_ROOTS[@]} -gt 0 ]]; then
+  [[ -f "$STORAGE_CONFIGURATOR" ]] || {
+    echo "ERROR: storage configurator not found: $STORAGE_CONFIGURATOR" >&2
+    exit 66
+  }
+fi
 
 if [[ -z "$MASTER_URL" ]]; then
   read -r -p "Choose DVR_MASTER_URL: " MASTER_URL
@@ -122,6 +150,15 @@ bash "$LEGACY_INSTALLER" \
   --node-token "$NODE_TOKEN" \
   --media-secret "$NODE_MEDIA_SECRET" \
   "${PASSTHROUGH[@]}"
+
+if [[ "$SELECT_STORAGE" == true || ${#STORAGE_ROOTS[@]} -gt 0 ]]; then
+  storage_args=(--env-file "$ENV_FILE")
+  [[ "$SELECT_STORAGE" == true ]] && storage_args+=(--interactive)
+  for root in "${STORAGE_ROOTS[@]}"; do
+    [[ -n "$root" ]] && storage_args+=(--root "$root")
+  done
+  bash "$STORAGE_CONFIGURATOR" "${storage_args[@]}"
+fi
 
 [[ -r "$ENV_FILE" ]] || {
   echo "ERROR: node environment was not created: $ENV_FILE" >&2
@@ -168,3 +205,7 @@ echo
 echo "Root-only node installation completed."
 echo "Master registration file: $REGISTRATION_FILE"
 echo "The master must accept these exact operator-defined values; it must not generate replacements."
+if grep -q '^DVR_STORAGE_ROOTS=' "$ENV_FILE"; then
+  roots_count="$(sed -n 's/^DVR_STORAGE_ROOTS=//p' "$ENV_FILE" | tail -1 | awk -F, '{print NF}')"
+  echo "Archive storage pool: ${roots_count} filesystem(s)."
+fi

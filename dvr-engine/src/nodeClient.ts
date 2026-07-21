@@ -1,7 +1,7 @@
 import os from 'node:os';
-import fs from 'node:fs/promises';
 import { config } from './config.js';
 import { getLocalEventStoreHealth } from './localEventStore.js';
+import { storagePoolStatus } from './storagePool.js';
 import type { CameraConfig } from './types.js';
 
 let cachedCameras: CameraConfig[] = [];
@@ -41,17 +41,17 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
   return await response.json() as T;
 }
 
-async function storageStatus() {
+function storageStatus() {
   try {
-    const stat = await fs.statfs(config.dvrRoot);
+    return storagePoolStatus();
+  } catch (error) {
     return {
       root: config.dvrRoot,
-      total_bytes: stat.blocks * stat.bsize,
-      free_bytes: stat.bfree * stat.bsize,
-      available_bytes: stat.bavail * stat.bsize
+      pool_size: config.storageRoots.length,
+      state: 'critical',
+      error: error instanceof Error ? error.message : String(error),
+      roots: config.storageRoots.map((root) => ({ root, state: 'critical', reason: 'inspection_failed' }))
     };
-  } catch (error) {
-    return { root: config.dvrRoot, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -68,6 +68,8 @@ export async function heartbeat(): Promise<void> {
       hls: true,
       archive: true,
       export: true,
+      multi_disk_archive: config.storageRoots.length > 1,
+      archive_storage_roots: config.storageRoots.length,
       onvif_events: true,
       event_storage: 'local-sqlite',
       events: eventStore,
@@ -75,7 +77,7 @@ export async function heartbeat(): Promise<void> {
         String(process.env.VIDEO_MOTION_ENABLED || process.env.DVR_VIDEO_MOTION_ENABLED || '').toLowerCase()
       )
     },
-    storage: await storageStatus()
+    storage: storageStatus()
   };
   const response = await requestJson<{ config_generation?: string }>('/api/node-agent/heartbeat', {
     method: 'POST',
@@ -122,7 +124,7 @@ export async function pollCommands(
             ok: true,
             type: command.type,
             config_generation: configGeneration,
-            storage: await storageStatus(),
+            storage: storageStatus(),
             events: getLocalEventStoreHealth()
           }
         })

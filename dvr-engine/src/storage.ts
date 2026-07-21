@@ -3,10 +3,19 @@ import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import type { Response } from 'express';
 import { config } from './config.js';
+import {
+  assignStorageRoot,
+  selectStorageRoot,
+  storageRootsForStream
+} from './storagePool.js';
 import type { SegmentInfo } from './types.js';
 
 export function streamRoot(streamName: string): string {
-  return path.join(config.dvrRoot, streamName);
+  return path.join(selectStorageRoot(streamName), streamName);
+}
+
+export function streamRoots(streamName: string): string[] {
+  return storageRootsForStream(streamName).map((root) => path.join(root, streamName));
 }
 
 export function safeStreamName(streamName: string): boolean {
@@ -14,15 +23,15 @@ export function safeStreamName(streamName: string): boolean {
 }
 
 export async function ensureStreamDirs(streamName: string): Promise<void> {
-  await fs.mkdir(streamRoot(streamName), { recursive: true });
+  const root = await assignStorageRoot(streamName);
+  await fs.mkdir(path.join(root, streamName), { recursive: true });
 }
 
 export async function listSegments(streamName: string, start: Date, end: Date): Promise<SegmentInfo[]> {
   if (!safeStreamName(streamName)) return [];
-  const root = streamRoot(streamName);
-  const segments: SegmentInfo[] = [];
+  const segments = new Map<string, SegmentInfo>();
 
-  async function walk(dir: string) {
+  async function walk(root: string, dir: string) {
     let entries: import('node:fs').Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -32,24 +41,26 @@ export async function listSegments(streamName: string, start: Date, end: Date): 
     for (const entry of entries) {
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await walk(abs);
+        await walk(root, abs);
         continue;
       }
       if (!entry.name.endsWith('.ts')) continue;
       const ts = parseTimestampFromSegment(entry.name);
-      if (!ts) continue;
-      if (ts >= start && ts <= end) {
-        segments.push({
+      if (!ts || ts < start || ts > end) continue;
+      const relativePath = path.relative(root, abs).split(path.sep).join('/');
+      const key = `${ts.getTime()}\0${relativePath}`;
+      if (!segments.has(key)) {
+        segments.set(key, {
           absolutePath: abs,
-          relativePath: path.relative(root, abs).split(path.sep).join('/'),
+          relativePath,
           timestamp: ts
         });
       }
     }
   }
 
-  await walk(root);
-  return segments.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  for (const root of streamRoots(streamName)) await walk(root, root);
+  return [...segments.values()].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 }
 
 export async function listArchiveRanges(streamName: string, start: Date, end: Date, maxGapMs: number): Promise<Array<{ start: string; end: string; segments: number }>> {
@@ -89,38 +100,56 @@ export function parseTimestampFromSegment(filename: string): Date | null {
   return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
 }
 
+function safeCandidate(root: string, normalized: string): string | null {
+  const abs = path.resolve(path.join(root, normalized));
+  const rootResolved = path.resolve(root);
+  if (abs !== rootResolved && !abs.startsWith(rootResolved + path.sep)) return null;
+  return abs;
+}
+
 export async function serveSafeFile(res: Response, streamName: string, filePath: string): Promise<void> {
   if (!safeStreamName(streamName)) {
     res.status(400).json({ error: 'Invalid stream name' });
     return;
   }
-  const root = streamRoot(streamName);
-  const normalized = path.normalize(filePath).replace(/^([.][.][\/\\])+/, '');
-  const abs = path.join(root, normalized);
-  let resolved = path.resolve(abs);
-  const rootResolved = path.resolve(root);
-  if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) {
-    res.status(400).json({ error: 'Invalid file path' });
-    return;
-  }
-  try {
-    await fs.access(resolved);
-  } catch {
-    const liveOnlyFallback = !normalized.includes('/') && normalized.endsWith('.ts')
-      ? path.resolve(path.join(root, 'live', normalized))
-      : null;
-    if (!liveOnlyFallback || !liveOnlyFallback.startsWith(rootResolved + path.sep)) {
-      res.status(404).json({ error: 'File not found' });
+
+  const normalized = path.normalize(filePath).replace(/^([.][.][/\\])+/, '');
+  let resolved: string | null = null;
+
+  for (const root of streamRoots(streamName)) {
+    const candidate = safeCandidate(root, normalized);
+    if (!candidate) {
+      res.status(400).json({ error: 'Invalid file path' });
       return;
     }
     try {
-      await fs.access(liveOnlyFallback);
-      resolved = liveOnlyFallback;
+      await fs.access(candidate);
+      resolved = candidate;
+      break;
     } catch {
-      res.status(404).json({ error: 'File not found' });
-      return;
+      // Continue through the storage pool. Old archive segments may remain on a
+      // previous disk after adding, removing or recovering a storage device.
+    }
+
+    const liveFallback = !normalized.includes('/') && normalized.endsWith('.ts')
+      ? safeCandidate(root, path.join('live', normalized))
+      : null;
+    if (liveFallback) {
+      try {
+        await fs.access(liveFallback);
+        resolved = liveFallback;
+        break;
+      } catch {
+        // Try the next storage root.
+      }
     }
   }
+
+  if (!resolved) {
+    res.status(404).json({ error: 'File not found' });
+    return;
+  }
+
   res.setHeader('cache-control', 'no-store');
   if (resolved.endsWith('.m3u8')) res.type('application/vnd.apple.mpegurl');
   else if (resolved.endsWith('.ts')) res.type('video/mp2t');
