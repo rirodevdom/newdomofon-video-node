@@ -1,0 +1,67 @@
+name: Multi-disk archive storage
+
+on:
+  pull_request:
+    paths:
+      - 'dvr-engine/src/config.ts'
+      - 'dvr-engine/src/storage.ts'
+      - 'dvr-engine/src/storagePool.ts'
+      - 'dvr-engine/src/nodeClient.ts'
+      - 'dvr-engine/src/cleanup.ts'
+      - 'dvr-engine/test/storage-pool.mjs'
+      - 'scripts/configure-node-storage-pool.sh'
+      - 'scripts/install-node-manual-local-root.sh'
+      - 'scripts/node-disk-guard.sh'
+      - 'scripts/reconcile-archive-events.mjs'
+      - 'docs/MULTI_DISK_STORAGE.md'
+      - '.github/workflows/multi-disk-storage.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: dvr-engine/package-lock.json
+
+      - name: Validate scripts
+        run: |
+          bash -n scripts/configure-node-storage-pool.sh
+          bash -n scripts/install-node-manual-local-root.sh
+          bash -n scripts/node-disk-guard.sh
+          node --check scripts/reconcile-archive-events.mjs
+
+      - name: Validate storage selector dry-run
+        run: |
+          mkdir -p /tmp/archive-a /tmp/archive-b /tmp/newdomofon-env
+          cat >/tmp/newdomofon-env/app.env <<'EOF'
+          NODE_ENV=production
+          DVR_ROOT=/tmp/archive-a
+          DVR_DISK_REQUIRE_MOUNTPOINT=false
+          EOF
+
+          sudo ENV_FILE=/tmp/newdomofon-env/app.env \
+            bash scripts/configure-node-storage-pool.sh \
+              --root /tmp/archive-a \
+              --root /tmp/archive-b \
+              --allow-root-filesystem \
+              --dry-run \
+            | tee /tmp/storage-selector.log
+
+          grep -q 'DVR_STORAGE_ROOTS=/tmp/archive-a,/tmp/archive-b' /tmp/storage-selector.log
+          ! grep -q '^DVR_STORAGE_ROOTS=' /tmp/newdomofon-env/app.env
+
+      - name: Build DVR engine
+        working-directory: dvr-engine
+        run: |
+          npm ci
+          npm run build
+
+      - name: Test multi-disk distribution and archive lookup
+        working-directory: dvr-engine
+        run: node test/storage-pool.mjs
