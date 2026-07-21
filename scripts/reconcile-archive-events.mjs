@@ -19,7 +19,7 @@ function intEnv(name, fallback, min, max) {
 }
 
 function parseArgs(argv) {
-  const result = { apply: false, stream: '' };
+  const result = { apply: false, stream: '', help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--apply') result.apply = true;
@@ -31,11 +31,25 @@ function parseArgs(argv) {
   return result;
 }
 
-function eventDbPath() {
+function storageRoots() {
+  const fallback = String(process.env.DVR_ROOT || '/var/lib/newdomofon-video/dvr').trim();
+  const raw = String(process.env.DVR_STORAGE_ROOTS || fallback).trim();
+  const roots = [];
+  for (const item of raw.split(',')) {
+    const value = item.trim();
+    if (!value) continue;
+    if (!path.isAbsolute(value)) throw new Error(`Archive root must be absolute: ${value}`);
+    const normalized = path.resolve(value);
+    if (!roots.includes(normalized)) roots.push(normalized);
+  }
+  if (!roots.length) throw new Error('No archive storage roots configured');
+  return roots;
+}
+
+function eventDbPath(roots = storageRoots()) {
   const configured = String(process.env.DVR_EVENT_DB || process.env.EVENT_DB_PATH || '').trim();
   if (configured) return configured;
-  const dvrRoot = String(process.env.DVR_ROOT || '/var/lib/newdomofon-video/dvr');
-  return path.join(path.dirname(dvrRoot), 'events', 'events.sqlite3');
+  return path.join(path.dirname(roots[0]), 'events', 'events.sqlite3');
 }
 
 function stateFilePath(dbPath) {
@@ -52,6 +66,13 @@ function readJsonFile(file) {
   } catch {
     return null;
   }
+}
+
+function writeState(file, payload) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o750 });
+  const temp = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(temp, `${JSON.stringify(payload)}\n`, { mode: 0o640 });
+  fs.renameSync(temp, file);
 }
 
 function localHour(timestampMs) {
@@ -75,13 +96,6 @@ function hasArchiveSegments(directory) {
   } catch {
     return false;
   }
-}
-
-function writeState(file, payload) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o750 });
-  const temp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(temp, `${JSON.stringify(payload)}\n`, { mode: 0o640 });
-  fs.renameSync(temp, file);
 }
 
 function mountedExactly(target) {
@@ -114,7 +128,7 @@ function mountedExactly(target) {
   }
 }
 
-function archiveStorageSafety(dvrRoot) {
+function archiveStorageSafety(roots) {
   const pauseMarker = String(
     process.env.DVR_DISK_GUARD_PAUSE_MARKER || '/run/newdomofon-video/node-disk-paused'
   );
@@ -129,17 +143,30 @@ function archiveStorageSafety(dvrRoot) {
   if (diskState?.state === 'critical') {
     return { safe: false, reason: `node_disk_guard_${String(diskState.reason || 'critical')}` };
   }
-
-  try {
-    if (!fs.statSync(dvrRoot).isDirectory()) {
-      return { safe: false, reason: 'dvr_root_is_not_directory' };
+  if (Array.isArray(diskState?.roots)) {
+    const unsafe = diskState.roots.filter((item) => String(item?.state || '') === 'critical');
+    if (unsafe.length) {
+      return {
+        safe: false,
+        reason: 'one_or_more_archive_roots_unavailable',
+        roots: unsafe.map((item) => String(item?.root || '')).filter(Boolean)
+      };
     }
-  } catch {
-    return { safe: false, reason: 'dvr_root_unavailable' };
   }
 
-  if (boolEnv('DVR_DISK_REQUIRE_MOUNTPOINT', false) && !mountedExactly(dvrRoot)) {
-    return { safe: false, reason: 'required_dvr_mount_missing' };
+  for (const root of roots) {
+    try {
+      if (!fs.statSync(root).isDirectory()) {
+        return { safe: false, reason: 'archive_root_is_not_directory', root };
+      }
+      fs.accessSync(root, fs.constants.R_OK | fs.constants.X_OK);
+    } catch {
+      return { safe: false, reason: 'archive_root_unavailable', root };
+    }
+
+    if (boolEnv('DVR_DISK_REQUIRE_MOUNTPOINT', false) && !mountedExactly(root)) {
+      return { safe: false, reason: 'required_archive_mount_missing', root };
+    }
   }
 
   return { safe: true, reason: 'ok' };
@@ -200,11 +227,11 @@ async function main() {
     return;
   }
 
-  const enabled = boolEnv('DVR_ARCHIVE_EVENT_SYNC_ENABLED', true);
-  const dbPath = eventDbPath();
+  const roots = storageRoots();
+  const dbPath = eventDbPath(roots);
   const stateFile = stateFilePath(dbPath);
   const checkedAt = new Date().toISOString();
-  const dvrRoot = String(process.env.DVR_ROOT || '/var/lib/newdomofon-video/dvr');
+  const enabled = boolEnv('DVR_ARCHIVE_EVENT_SYNC_ENABLED', true);
 
   if (!enabled) {
     const state = { ok: true, enabled: false, mode: args.apply ? 'apply' : 'dry-run', checked_at: checkedAt };
@@ -213,14 +240,15 @@ async function main() {
     return;
   }
 
-  const storageSafety = archiveStorageSafety(dvrRoot);
+  const storageSafety = archiveStorageSafety(roots);
   if (!storageSafety.safe) {
     const state = {
       ok: false,
       enabled: true,
       mode: args.apply ? 'apply' : 'dry-run',
       skipped: storageSafety.reason,
-      dvr_root: dvrRoot,
+      storage_roots: roots,
+      unsafe_root: storageSafety.root || null,
       checked_at: checkedAt
     };
     writeState(stateFile, state);
@@ -235,6 +263,7 @@ async function main() {
       enabled: true,
       mode: args.apply ? 'apply' : 'dry-run',
       database: dbPath,
+      storage_roots: roots,
       skipped: 'event_database_missing',
       checked_at: checkedAt
     };
@@ -277,6 +306,7 @@ async function main() {
       enabled: true,
       mode: args.apply ? 'apply' : 'dry-run',
       local_streams: 0,
+      storage_roots: roots,
       checked_at: checkedAt
     };
     writeState(stateFile, state);
@@ -294,7 +324,6 @@ async function main() {
     : -1;
   let cursorStream = sameScope ? String(previousState?.cursor_stream_name || '') : '';
   const database = new DatabaseSync(dbPath);
-
   database.exec('PRAGMA busy_timeout = 15000;');
 
   const streams = [...localStreams].sort();
@@ -312,19 +341,6 @@ async function main() {
     wrapped = true;
   }
 
-  const groups = new Map();
-  for (const row of rows) {
-    const stream = String(row.stream_name || '');
-    const hour = localHour(Number(row.bucket_ms));
-    const key = `${stream}\u0000${hour.startMs}`;
-    const current = groups.get(key);
-    if (current) {
-      current.eventCount += Number(row.event_count || 0);
-    } else {
-      groups.set(key, { stream, ...hour, eventCount: Number(row.event_count || 0) });
-    }
-  }
-
   let archiveHoursChecked = 0;
   let missingArchiveHours = 0;
   let candidateEvents = 0;
@@ -332,20 +348,23 @@ async function main() {
   const examples = [];
 
   try {
-    for (const group of groups.values()) {
+    for (const row of rows) {
+      const stream = String(row.stream_name || '');
+      const hour = localHour(Number(row.bucket_ms));
       archiveHoursChecked += 1;
-      const archiveDir = path.join(dvrRoot, group.stream, group.dateDir, group.hourDir);
-      if (hasArchiveSegments(archiveDir)) continue;
+      const directories = roots.map((root) => path.join(root, stream, hour.dateDir, hour.hourDir));
+      if (directories.some(hasArchiveSegments)) continue;
 
+      const eventCount = Number(row.event_count || 0);
       missingArchiveHours += 1;
-      candidateEvents += group.eventCount;
+      candidateEvents += eventCount;
       if (examples.length < 20) {
         examples.push({
-          stream_name: group.stream,
-          start: new Date(group.startMs).toISOString(),
-          end: new Date(group.endMs).toISOString(),
-          archive_directory: archiveDir,
-          event_count: group.eventCount
+          stream_name: stream,
+          start: new Date(hour.startMs).toISOString(),
+          end: new Date(hour.endMs).toISOString(),
+          archive_directories: directories,
+          event_count: eventCount
         });
       }
 
@@ -355,7 +374,7 @@ async function main() {
          WHERE stream_name = ?
            AND occurred_at_ms >= ?
            AND occurred_at_ms < ?
-      `).run(group.stream, group.startMs, group.endMs);
+      `).run(stream, hour.startMs, hour.endMs);
       deletedEvents += Number(result.changes || 0);
     }
 
@@ -372,7 +391,7 @@ async function main() {
     enabled: true,
     mode: args.apply ? 'apply' : 'dry-run',
     database: dbPath,
-    dvr_root: dvrRoot,
+    storage_roots: roots,
     scope_stream: args.stream,
     local_streams: streams.length,
     min_age_minutes: minAgeMinutes,
@@ -392,10 +411,12 @@ async function main() {
 }
 
 main().catch((error) => {
-  const dbPath = eventDbPath();
+  const roots = storageRoots();
+  const dbPath = eventDbPath(roots);
   const state = {
     ok: false,
     error: error instanceof Error ? error.message : String(error),
+    storage_roots: roots,
     checked_at: new Date().toISOString()
   };
   try {
