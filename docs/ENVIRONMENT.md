@@ -40,7 +40,8 @@ chmod 0640 /etc/newdomofon-video/app.env
 | `NODE_ENV` | Режим Node.js. В production должно быть `production`. |
 | `DVR_ENGINE_ROLE` | Роль DVR-процесса. На отдельной video node всегда `node`. Не используйте `standalone`. |
 | `DVR_ENGINE_PORT` | Локальный HTTP-порт DVR engine. Стандартное значение `3010`. |
-| `DVR_ROOT` | Корень live-файлов и локального архива. Рекомендуется отдельный смонтированный диск. |
+| `DVR_ROOT` | Первый/совместимый корень live-файлов и локального архива. При нескольких дисках должен совпадать с первым значением `DVR_STORAGE_ROOTS`. |
+| `DVR_STORAGE_ROOTS` | Разделённый запятыми список абсолютных archive mountpoints. Камеры стабильно распределяются между доступными roots, а чтение архива выполняется по всему списку. Если не задан, используется только `DVR_ROOT`. |
 | `FFMPEG_PATH` | Полный путь к бинарнику FFmpeg. Обычно `/usr/bin/ffmpeg`. |
 | `SEGMENT_DURATION` | Целевая длительность HLS/архивного сегмента в секундах. |
 | `LIVE_WINDOW` | Количество сегментов в live playlist. |
@@ -48,6 +49,8 @@ chmod 0640 /etc/newdomofon-video/app.env
 | `CLEANUP_INTERVAL_MINUTES` | Интервал штатной очистки архива по retention. Disk guard работает отдельно. |
 | `MAX_EXPORT_SECONDS` | Максимальная длительность одного MP4 export в секундах. |
 | `DVR_LIVE_PLAYLIST_WAIT_MS` | Сколько ждать появления live playlist перед возвратом ошибки. |
+
+Настройка нескольких дисков описана в [MULTI_DISK_STORAGE.md](MULTI_DISK_STORAGE.md).
 
 ## 2. Ручная регистрация на master
 
@@ -115,7 +118,7 @@ openssl rand -hex 32
 | Переменная | Назначение |
 |---|---|
 | `DVR_ARCHIVE_EVENT_SYNC_ENABLED` | Включить периодический reconciler событий и локального архива. |
-| `DVR_ARCHIVE_EVENT_SYNC_APPLY` | `false` — только отчёт; `true` — удалять события часов, архив которых уже отсутствует. Начинайте с `false`. |
+| `DVR_ARCHIVE_EVENT_SYNC_APPLY` | `false` — только отчёт; `true` — удалять события часов, архив которых уже отсутствует на всех выбранных storage roots. Начинайте с `false`. |
 | `DVR_ARCHIVE_EVENT_SYNC_MIN_AGE_MINUTES` | Не проверять слишком свежие часы, чтобы не конфликтовать с активной записью. |
 | `DVR_ARCHIVE_EVENT_SYNC_MAX_HOURS_PER_RUN` | Максимальное число camera-hour buckets за один запуск. |
 | `DVR_ARCHIVE_EVENT_SYNC_MASTER_TIMEOUT_MS` | Timeout получения camera config с master. При недоступном master reconciler работает fail-closed и ничего не удаляет. |
@@ -124,24 +127,24 @@ openssl rand -hex 32
 
 ## 6. Disk guard
 
-Disk guard имеет приоритет над обычным retention, когда filesystem близка к заполнению.
+Disk guard имеет приоритет над обычным retention, когда одна или несколько archive filesystem близки к заполнению.
 
 | Переменная | Назначение |
 |---|---|
-| `DVR_DISK_MIN_FREE_BYTES` | Минимум свободных байт на filesystem архива до аварийной очистки. |
+| `DVR_DISK_MIN_FREE_BYTES` | Минимум свободных байт на каждой filesystem архива до аварийной очистки. |
 | `DVR_DISK_MIN_FREE_PERCENT` | Минимум свободного места в процентах до аварийной очистки. Используется более строгий из byte/% порогов. |
-| `DVR_DISK_RESUME_FREE_BYTES` | Сколько свободных байт требуется для возобновления записи. |
-| `DVR_DISK_RESUME_FREE_PERCENT` | Сколько процентов требуется для возобновления записи. |
-| `DVR_DISK_MIN_FREE_INODES_PERCENT` | Минимальный процент свободных inode до остановки/очистки. |
-| `DVR_DISK_RESUME_FREE_INODES_PERCENT` | Процент свободных inode для возобновления. |
+| `DVR_DISK_RESUME_FREE_BYTES` | Сколько свободных байт требуется для возврата filesystem в нормальный пул. |
+| `DVR_DISK_RESUME_FREE_PERCENT` | Сколько процентов требуется для возврата filesystem в нормальный пул. |
+| `DVR_DISK_MIN_FREE_INODES_PERCENT` | Минимальный процент свободных inode до исключения filesystem и очистки. |
+| `DVR_DISK_RESUME_FREE_INODES_PERCENT` | Процент свободных inode для восстановления filesystem. |
 | `DVR_SYSTEM_MIN_FREE_BYTES` | Минимум свободных байт на system filesystem, где находятся SQLite/logs/tmp. |
 | `DVR_SYSTEM_MIN_FREE_PERCENT` | Минимальный процент свободного места на system filesystem. |
 | `DVR_SYSTEM_RESUME_FREE_BYTES` | Byte-порог восстановления system filesystem. |
 | `DVR_SYSTEM_RESUME_FREE_PERCENT` | Процентный порог восстановления system filesystem. |
 | `DVR_DISK_MIN_ARCHIVE_AGE_MINUTES` | Минимальный возраст hour-каталога, который разрешено аварийно удалить. |
-| `DVR_DISK_MAX_DELETE_DIRS_PER_RUN` | Ограничение числа удаляемых hour-каталогов за один запуск guard. |
+| `DVR_DISK_MAX_DELETE_DIRS_PER_RUN` | Ограничение числа удаляемых hour-каталогов за один запуск guard для каждой filesystem. |
 | `DVR_DISK_STALE_TMP_MINUTES` | Возраст временных export/device-archive файлов, после которого их можно удалить. |
-| `DVR_DISK_REQUIRE_MOUNTPOINT` | При `true` DVR не стартует, если `DVR_ROOT` не является отдельной mountpoint. Защищает root filesystem при пропавшем диске. |
+| `DVR_DISK_REQUIRE_MOUNTPOINT` | При `true` каждый путь из `DVR_STORAGE_ROOTS` обязан быть отдельной точкой монтирования. Пропавший диск исключается из пула; DVR полностью останавливается только если не осталось доступных roots. |
 
 Подробно: [DISK_PROTECTION.md](DISK_PROTECTION.md).
 
