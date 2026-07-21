@@ -39,17 +39,20 @@ jobs:
       - name: Validate storage selector dry-run
         run: |
           mkdir -p /tmp/archive-a /tmp/archive-b /tmp/newdomofon-env
+          sudo mount -t tmpfs -o size=64m newdomofon-ci-a /tmp/archive-a
+          sudo mount -t tmpfs -o size=64m newdomofon-ci-b /tmp/archive-b
+          trap 'sudo umount /tmp/archive-a /tmp/archive-b 2>/dev/null || true' EXIT
+
           cat >/tmp/newdomofon-env/app.env <<'EOF'
           NODE_ENV=production
           DVR_ROOT=/tmp/archive-a
-          DVR_DISK_REQUIRE_MOUNTPOINT=false
+          DVR_DISK_REQUIRE_MOUNTPOINT=true
           EOF
 
           sudo ENV_FILE=/tmp/newdomofon-env/app.env \
             bash scripts/configure-node-storage-pool.sh \
               --root /tmp/archive-a \
               --root /tmp/archive-b \
-              --allow-root-filesystem \
               --dry-run \
             | tee /tmp/storage-selector.log
 
