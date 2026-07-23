@@ -9,6 +9,13 @@ if [[ -r "$ENV_FILE" ]]; then
   set +a
 fi
 
+PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-node}"
+STORAGE_PREPARER="$PROJECT_DIR/scripts/prepare-node-runtime-storage.sh"
+if [[ -f "$STORAGE_PREPARER" ]]; then
+  NEWDOMOFON_ENV_FILE="$ENV_FILE" PROJECT_DIR="$PROJECT_DIR" \
+    bash "$STORAGE_PREPARER"
+fi
+
 SERVICE="${DVR_DISK_GUARD_SERVICE:-newdomofon-video-dvr.service}"
 STATE_DIR="${DVR_DISK_GUARD_STATE_DIR:-/run/newdomofon-video}"
 STATE_FILE="$STATE_DIR/node-disk-state.json"
