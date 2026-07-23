@@ -10,6 +10,7 @@ CACHE_CHECKSUM="$PAYLOAD_DIR/npm-cache.tar.gz.sha256"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 TEMP_ROOT=""
 PAYLOAD_HOLD=""
+BUNDLE_COMMIT=""
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
@@ -53,11 +54,13 @@ done
 [[ "$(manifest_value project_type)" == "node" ]] ||
   fail "Пакет предназначен не для video node"
 
+BUNDLE_COMMIT="$(manifest_value source_commit)"
 EXPECTED_PLATFORM="$(manifest_value platform)"
 EXPECTED_ARCH="$(manifest_value architecture)"
 CURRENT_PLATFORM="$(node -p 'process.platform')"
 CURRENT_ARCH="$(node -p 'process.arch')"
 
+[[ -n "$BUNDLE_COMMIT" ]] || fail "В manifest отсутствует source_commit"
 [[ "$CURRENT_PLATFORM" == "$EXPECTED_PLATFORM" ]] ||
   fail "Платформа пакета $EXPECTED_PLATFORM, сервера $CURRENT_PLATFORM"
 [[ "$CURRENT_ARCH" == "$EXPECTED_ARCH" ]] ||
@@ -92,7 +95,7 @@ export npm_config_fund=false
 export npm_config_update_notifier=false
 export npm_config_prefer_offline=true
 
-log "Offline bundle commit: $(manifest_value source_commit 2>/dev/null || true)"
+log "Offline bundle commit: $BUNDLE_COMMIT"
 log "Запуск штатного безопасного updater без сетевого доступа npm"
 
 set +e
