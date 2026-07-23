@@ -11,6 +11,7 @@ Group=newdomofon
 WorkingDirectory=/opt/newdomofon-video-node/dvr-engine
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
+Environment=TZ=Europe/Moscow
 ExecStart=/usr/bin/node /opt/newdomofon-video-node/dvr-engine/dist/index.js
 Restart=always
 RestartSec=5
