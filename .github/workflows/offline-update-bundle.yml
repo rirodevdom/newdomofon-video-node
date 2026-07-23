@@ -4,6 +4,16 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - 'offline-update.sh'
+      - 'update-installed-project.sh'
+      - 'scripts/build-offline-update-bundle.sh'
+      - 'scripts/deploy-node.sh'
+      - 'dvr-engine/package.json'
+      - 'dvr-engine/package-lock.json'
+      - '.github/workflows/offline-update-bundle.yml'
+      - 'docs/OFFLINE_UPDATE.md'
 
 permissions:
   contents: read
@@ -37,7 +47,8 @@ jobs:
       - name: Inspect bundle metadata
         run: |
           cat "$RUNNER_TEMP"/offline-bundles/*.txt
-          sha256sum -c "$RUNNER_TEMP"/offline-bundles/*.tar.gz.sha256
+          cd "$RUNNER_TEMP/offline-bundles"
+          sha256sum -c ./*.tar.gz.sha256
 
       - uses: actions/upload-artifact@v4
         with:
