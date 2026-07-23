@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "prebuild": "python3 ../scripts/patch-smartyard-snapshot-route.py --project-dir .. && python3 ../scripts/patch-smartyard-archive-limit.py --project-dir ..",
+    "prebuild": "python3 ../scripts/patch-smartyard-snapshot-route.py --project-dir .. && python3 ../scripts/patch-smartyard-archive-limit.py --project-dir .. && python3 ../scripts/patch-archive-mp4-export-v2.py --project-dir ..",
     "build": "tsc",
     "start": "node dist/index.js"
   },
