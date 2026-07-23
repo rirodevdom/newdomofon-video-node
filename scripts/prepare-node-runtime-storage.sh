@@ -110,10 +110,14 @@ for root in "${STORAGE_ROOTS[@]}"; do
     -exec chmod u+rw {} +
 done
 
-DROPIN_DIR=/etc/systemd/system/newdomofon-video-dvr.service.d
-DROPIN_FILE="$DROPIN_DIR/20-storage-roots.conf"
-install -d -m 0755 "$DROPIN_DIR"
-python3 - "$DROPIN_FILE" "${STORAGE_ROOTS[@]}" <<'PY'
+# During a normal archive update /etc is writable and the explicit drop-in is
+# installed. During the recurring sandboxed disk-guard run /etc is read-only;
+# permissions can still be repaired without making the oneshot fail.
+if [[ -w /etc/systemd/system ]]; then
+  DROPIN_DIR=/etc/systemd/system/newdomofon-video-dvr.service.d
+  DROPIN_FILE="$DROPIN_DIR/20-storage-roots.conf"
+  install -d -m 0755 "$DROPIN_DIR"
+  python3 - "$DROPIN_FILE" "${STORAGE_ROOTS[@]}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -130,8 +134,9 @@ for root in roots:
     lines.append(f'ReadWritePaths={quote(root)}')
 path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 PY
-chmod 0644 "$DROPIN_FILE"
-systemctl daemon-reload
+  chmod 0644 "$DROPIN_FILE"
+  systemctl daemon-reload
+fi
 
 if [[ "$ready" == true ]]; then
   printf 'runtime_user=%s\nruntime_group=%s\nevent_root=%s\nstorage_roots=%s\nprepared_at=%s\n' \
