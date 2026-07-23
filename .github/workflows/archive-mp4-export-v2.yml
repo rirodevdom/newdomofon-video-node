@@ -1,0 +1,53 @@
+name: Canonical archive MP4 export
+
+on:
+  pull_request:
+    paths:
+      - 'dvr-engine/src/archiveMp4ExportV2.ts'
+      - 'dvr-engine/src/index.ts'
+      - 'dvr-engine/src/storage.ts'
+      - 'dvr-engine/package.json'
+      - 'dvr-engine/package-lock.json'
+      - 'scripts/patch-archive-mp4-export-v2.py'
+      - 'deploy/systemd/newdomofon-video-dvr.service'
+      - '.github/workflows/archive-mp4-export-v2.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: dvr-engine/package-lock.json
+
+      - name: Validate idempotent route patch
+        run: |
+          python3 -m py_compile scripts/patch-archive-mp4-export-v2.py
+          python3 scripts/patch-archive-mp4-export-v2.py --project-dir "$PWD"
+          python3 scripts/patch-archive-mp4-export-v2.py --project-dir "$PWD"
+          test "$(grep -c "import { registerArchiveMp4ExportV2Route }" dvr-engine/src/index.ts)" -eq 1
+          test "$(grep -c '^registerArchiveMp4ExportV2Route(app);$' dvr-engine/src/index.ts)" -eq 1
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('dvr-engine/src/index.ts').read_text()
+          assert text.index('registerArchiveMp4ExportV2Route(app);') < text.index('registerArchiveExportRoute(app);')
+          PY
+
+      - name: Build DVR engine
+        working-directory: dvr-engine
+        run: |
+          npm ci --include=dev
+          npm run build
+
+      - name: Validate compiled route
+        run: |
+          test -f dvr-engine/dist/archiveMp4ExportV2.js
+          grep -q 'x-newdomofon-export-route' dvr-engine/dist/archiveMp4ExportV2.js
+          grep -q 'registerArchiveMp4ExportV2Route(app)' dvr-engine/dist/index.js
+          grep -q 'Environment=TZ=Europe/Moscow' deploy/systemd/newdomofon-video-dvr.service
