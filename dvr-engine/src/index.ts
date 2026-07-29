@@ -3,7 +3,6 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { reloadCameras, getRecorderStatus, getAllRecorderStatuses, stopAllRecorders } from './recorder.js';
@@ -13,8 +12,6 @@ import { exportMp4 } from './exporter.js';
 import { cleanupArchives } from './cleanup.js';
 import { connectOnvifCamera } from './onvif.js';
 import { startOnvifEventCollectorV2 } from './onvifEventsV2.js';
-import { startHikvisionEventCollector } from './hikvisionEvents.js';
-import { startDeviceArchiveIndexer } from './deviceArchiveIndexer.js';
 import { startVideoMotionDetector, stopAllVideoMotionDetectors } from './videoMotionDetector.js';
 import { registerArchiveExportRoute } from './archiveExport.js';
 import { registerLiveTsRelayRoutes } from './liveTsRelay.js';
@@ -27,7 +24,6 @@ import {
   startLocalEventRetention
 } from './localEventStore.js';
 import { registerLocalEventRoutes } from './localEventsApi.js';
-import { cleanupDeviceArchiveSessions, createDeviceArchivePlaylist, deviceArchiveFile, listDeviceArchiveRanges, prepareDeviceArchiveSession } from './deviceArchive.js';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -50,7 +46,6 @@ initializeLocalEventStore();
 registerLocalEventRoutes(app);
 
 const maxArchiveRangesSeconds = Math.max(config.maxExportSeconds, Number(process.env.DVR_ARCHIVE_RANGES_MAX_SECONDS || 31 * 24 * 60 * 60));
-const maxDeviceArchiveRangesSeconds = Math.max(config.maxExportSeconds, Number(process.env.DVR_DEVICE_ARCHIVE_RANGES_MAX_SECONDS || 31 * 24 * 60 * 60));
 const livePlaylistWaitMs = Math.max(0, Number(process.env.DVR_LIVE_PLAYLIST_WAIT_MS || 10_000));
 
 async function sleep(ms: number): Promise<void> {
@@ -158,44 +153,6 @@ app.get('/cameras/:streamName/archive/ranges', requireMediaToken(['archive']), a
   }
 });
 
-app.get('/cameras/:streamName/device-archive.m3u8', requireMediaToken(['archive']), async (req, res, next) => {
-  try {
-    const range = parseRange(req, res);
-    if (!range) return;
-    const playlist = await createDeviceArchivePlaylist(req.params.streamName, range.start, range.end, String(req.query.token || ''));
-    res.setHeader('cache-control', 'no-store');
-    res.type('application/vnd.apple.mpegurl').send(playlist);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get('/cameras/:streamName/device-archive/session', requireMediaToken(['archive']), async (req, res, next) => {
-  try {
-    const range = parseRange(req, res);
-    if (!range) return;
-    const rawWaitMs = Number(req.query.wait_ms || process.env.DVR_DEVICE_ARCHIVE_PREPARE_WAIT_MS || 0);
-    const waitMs = Number.isFinite(rawWaitMs) ? Math.max(0, Math.min(60_000, rawWaitMs)) : 0;
-    const payload = await prepareDeviceArchiveSession(req.params.streamName, range.start, range.end, String(req.query.token || ''), waitMs);
-    res.setHeader('cache-control', 'no-store');
-    res.status(payload.ready ? 200 : payload.status === 'error' ? Number(payload.error_status_code || 502) : 202).json(payload);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get('/cameras/:streamName/device-archive/ranges', requireMediaToken(['archive']), async (req, res, next) => {
-  try {
-    const range = parseRange(req, res, maxDeviceArchiveRangesSeconds);
-    if (!range) return;
-    const items = await listDeviceArchiveRanges(req.params.streamName, range.start, range.end);
-    res.setHeader('cache-control', 'no-store');
-    res.json({ items });
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.get('/cameras/:streamName/export.mp4', requireMediaToken(['export']), async (req, res, next) => {
   try {
     const range = parseRange(req, res);
@@ -210,18 +167,6 @@ app.get('/files/:streamName/*', requireMediaToken(['live', 'archive', 'export', 
   try {
     const filePath = (req.params as Record<string, string>)['0'] || '';
     await serveSafeFile(res, req.params.streamName, filePath);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get('/device-archive/:streamName/:sessionId/:filename', requireMediaToken(['archive']), async (req, res, next) => {
-  try {
-    const file = await deviceArchiveFile(req.params.sessionId, req.params.filename);
-    if (!file) return res.status(404).json({ error: 'Device archive file not found' });
-    res.setHeader('cache-control', 'no-store');
-    res.type('video/mp2t');
-    createReadStream(file).pipe(res);
   } catch (error) {
     next(error);
   }
@@ -271,12 +216,9 @@ if (config.role === 'master') {
     }).catch(console.error), 10_000);
   }
   setInterval(() => cleanupArchives().catch(console.error), config.cleanupIntervalMinutes * 60_000);
-  setInterval(() => cleanupDeviceArchiveSessions(), 60_000);
   cleanupArchives().catch(console.error);
   startLocalEventRetention();
   startOnvifEventCollectorV2();
-  startHikvisionEventCollector();
-  startDeviceArchiveIndexer();
   startVideoMotionDetector();
 }
 

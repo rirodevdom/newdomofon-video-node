@@ -21,8 +21,8 @@ function storedPassword(camera: CameraConfig): string {
  * Build the private FFmpeg input URL without modifying the public camera source_url.
  *
  * Many ONVIF devices return an RTSP URI without userinfo even though the same
- * credentials are required for RTSP. Master already delivers the encrypted-at-rest
- * camera/device credentials to the assigned node, so the node can merge them only
+ * credentials are required for RTSP. Master delivers the encrypted-at-rest
+ * camera/device credentials to the assigned generic node, which merges them only
  * in memory immediately before spawning FFmpeg.
  */
 export function recorderInputUrl(camera: CameraConfig): string {
@@ -64,7 +64,7 @@ export function recorderConfigFingerprint(camera: CameraConfig): string {
     .update([
       recorderInputUrl(camera),
       camera.rtmp_push_url || '',
-      camera.archive_storage || 'node'
+      String(camera.retention_days || '')
     ].join('|'))
     .digest('hex');
 }

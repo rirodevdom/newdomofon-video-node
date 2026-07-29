@@ -1,6 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import path from 'node:path';
-import fs from 'node:fs/promises';
 import { config } from './config.js';
 import { query } from './db.js';
 import { isNodeMode, loadAssignedCameras } from './nodeClient.js';
@@ -124,7 +122,7 @@ export function getRecorderStatus(streamName: string) {
       id: state.camera.id,
       name: state.camera.name,
       stream_name: state.camera.stream_name,
-      archive_storage: state.camera.archive_storage || 'node',
+      archive_storage: 'node',
       retention_days: state.camera.retention_days
     }
   };
@@ -142,7 +140,7 @@ async function reloadCamerasInternal(): Promise<void> {
   const cameras = isNodeMode()
     ? await loadAssignedCameras()
     : (await query<CameraConfig>(
-        `SELECT id, name, stream_name, source_url, archive_storage, rtmp_push_url, retention_days, is_enabled
+        `SELECT id, name, stream_name, source_url, rtmp_push_url, retention_days, is_enabled
            FROM cameras
           WHERE is_enabled = true
           ORDER BY stream_name ASC`
@@ -198,10 +196,8 @@ export async function startRecorder(camera: CameraConfig, restarts: number): Pro
 
   await ensureStreamDirs(camera.stream_name);
   const root = streamRoot(camera.stream_name);
-  const writesNodeArchive = (camera.archive_storage || 'node') !== 'device';
-  const segmentPattern = writesNodeArchive ? '%Y-%m-%d/%H/%Y%m%d_%H%M%S.ts' : 'live/%06d.ts';
+  const segmentPattern = '%Y-%m-%d/%H/%Y%m%d_%H%M%S.ts';
   const livePlaylist = 'live.m3u8';
-  if (!writesNodeArchive) await fs.mkdir(path.join(root, 'live'), { recursive: true });
 
   const credentialsInjected = inputUrl !== String(camera.source_url || '').trim();
   updateDiagnostic(camera.stream_name, {
@@ -235,17 +231,16 @@ export async function startRecorder(camera: CameraConfig, restarts: number): Pro
   ];
 
   if (camera.rtmp_push_url) {
-    const hlsOptions = writesNodeArchive
-      ? `hls_time=${config.segmentDuration}:hls_list_size=${config.liveWindow}:hls_flags=temp_file+program_date_time+omit_endlist+independent_segments:strftime=1:strftime_mkdir=1:hls_segment_filename=${segmentPattern}`
-      : `hls_time=${config.segmentDuration}:hls_list_size=${config.liveWindow}:hls_flags=temp_file+program_date_time+omit_endlist+independent_segments+delete_segments:hls_delete_threshold=2:hls_segment_filename=${segmentPattern}`;
+    const hlsOptions = `hls_time=${config.segmentDuration}:hls_list_size=${config.liveWindow}:hls_flags=temp_file+program_date_time+omit_endlist+independent_segments:strftime=1:strftime_mkdir=1:hls_segment_filename=${segmentPattern}`;
     args.push('-f', 'tee', `[f=hls:${hlsOptions}]${livePlaylist}|[f=flv]${camera.rtmp_push_url}`);
   } else {
     args.push(
       '-f', 'hls',
       '-hls_time', String(config.segmentDuration),
       '-hls_list_size', String(config.liveWindow),
-      '-hls_flags', writesNodeArchive ? 'temp_file+program_date_time+omit_endlist+independent_segments' : 'temp_file+program_date_time+omit_endlist+independent_segments+delete_segments',
-      ...(writesNodeArchive ? ['-strftime', '1', '-strftime_mkdir', '1'] : ['-hls_delete_threshold', '2']),
+      '-hls_flags', 'temp_file+program_date_time+omit_endlist+independent_segments',
+      '-strftime', '1',
+      '-strftime_mkdir', '1',
       '-hls_segment_filename', segmentPattern,
       livePlaylist
     );

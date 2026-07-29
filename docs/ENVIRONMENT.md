@@ -107,11 +107,12 @@ openssl rand -hex 32
 | `DVR_EVENT_RETENTION_DAYS` | Сколько суток хранить локальные события. |
 | `DVR_EVENT_CLEANUP_INTERVAL_MINUTES` | Интервал удаления событий старше retention. |
 | `DVR_EVENT_QUERY_MAX_SECONDS` | Максимальная длительность временного диапазона одного event query. |
-| `DVR_EVENT_STORE_RAW_PAYLOAD` | Сохранять ли исходный payload ONVIF/Hikvision. Обычно `false`, чтобы не раздувать БД. |
+| `DVR_EVENT_STORE_RAW_PAYLOAD` | Сохранять ли исходный payload ONVIF. Обычно `false`, чтобы не раздувать БД. |
 | `ONVIF_EVENTS_ENABLED` | Включить ONVIF PullPoint/event collection. |
 | `ONVIF_EVENTS_REQUEST_TIMEOUT_MS` | Timeout одного ONVIF event-запроса. |
-| `DVR_HIKVISION_EVENTS_ENABLED` | Включить Hikvision alertStream collector там, где он нужен. |
 | `VIDEO_MOTION_ENABLED` | Включить FFmpeg software motion detection. Требует дополнительных ресурсов CPU. |
+
+Vendor-specific event collectors в generic video node не поддерживаются.
 
 ## 5. Синхронизация событий с архивом
 
@@ -143,28 +144,16 @@ Disk guard имеет приоритет над обычным retention, ког
 | `DVR_SYSTEM_RESUME_FREE_PERCENT` | Процентный порог восстановления system filesystem. |
 | `DVR_DISK_MIN_ARCHIVE_AGE_MINUTES` | Минимальный возраст hour-каталога, который разрешено аварийно удалить. |
 | `DVR_DISK_MAX_DELETE_DIRS_PER_RUN` | Ограничение числа удаляемых hour-каталогов за один запуск guard для каждой filesystem. |
-| `DVR_DISK_STALE_TMP_MINUTES` | Возраст временных export/device-archive файлов, после которого их можно удалить. |
+| `DVR_DISK_STALE_TMP_MINUTES` | Возраст временных export/tmp файлов, после которого их можно удалить. |
 | `DVR_DISK_REQUIRE_MOUNTPOINT` | При `true` каждый путь из `DVR_STORAGE_ROOTS` обязан быть отдельной точкой монтирования. Пропавший диск исключается из пула; DVR полностью останавливается только если не осталось доступных roots. |
 
 Подробно: [DISK_PROTECTION.md](DISK_PROTECTION.md).
 
-## 7. Архив на Hikvision/NVR
+## 7. Vendor-specific сервисы
 
-| Переменная | Назначение |
-|---|---|
-| `DVR_DEVICE_ARCHIVE_MAX_RANGE_SECONDS` | Максимальный диапазон одной device-archive playback-сессии. |
-| `DVR_DEVICE_ARCHIVE_MIN_PLAYBACK_SECONDS` | Минимальная запрашиваемая длительность playback. |
-| `DVR_DEVICE_ARCHIVE_SESSION_WINDOW_SECONDS` | Размер переиспользуемого окна сессии. |
-| `DVR_DEVICE_ARCHIVE_SESSION_ALIGN_SECONDS` | Шаг выравнивания начала сессии для reuse. |
-| `DVR_DEVICE_ARCHIVE_MAX_SESSIONS_PER_DEVICE` | Одновременный лимит playback-сессий на устройство. |
-| `DVR_DEVICE_ARCHIVE_PREPARE_WAIT_MS` | Сколько ждать подготовки HLS-сессии. |
-| `DVR_DEVICE_ARCHIVE_FIRST_SEGMENT_TIMEOUT_MS` | Timeout появления первого segment. |
-| `DVR_DEVICE_ARCHIVE_KEEP_MS` | Сколько держать неиспользуемую сессию до удаления. |
-| `DVR_HIKVISION_ARCHIVE_SEARCH_CACHE_MS` | Время кэширования результатов archive search. |
-| `DVR_HIKVISION_ARCHIVE_SEARCH_TIMEOUT_MS` | Timeout Hikvision archive search. |
-| `DVR_HIKVISION_ARCHIVE_SEARCH_PAGE_SIZE` | Число результатов на одну страницу поиска. |
-| `DVR_HIKVISION_ARCHIVE_SEARCH_MAX_PAGES` | Предельное число страниц одного поиска. |
-| `DVR_HIKVISION_ARCHIVE_FALLBACK_ON_EMPTY` | Включать ли fallback-поиск, если основной Hikvision search вернул пусто. `0` отключает. |
+Hikvision ISAPI, vendor-specific поиск каналов и записей, `alertStream` и playback архива устройства не входят в generic video node. Эти функции должны находиться в отдельном специализированном репозитории и отдельном runtime-сервисе.
+
+При обновлении `scripts/remove-hikvision-runtime.py` удаляет устаревшие ключи `DVR_HIKVISION_*` и `DVR_DEVICE_ARCHIVE_*` из production `app.env`, а также старые скомпилированные модули и временные каталоги.
 
 ## 8. Параметры установочных скриптов, а не runtime
 

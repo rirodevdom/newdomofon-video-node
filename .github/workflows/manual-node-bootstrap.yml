@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/deferred-node-pairing
+      - refactor/remove-hikvision-isapi
   pull_request:
 
 jobs:
@@ -86,14 +87,15 @@ jobs:
             DVR_EVENT_DB \
             DVR_ARCHIVE_EVENT_SYNC_ENABLED \
             DVR_DISK_MIN_FREE_BYTES \
-            DVR_DISK_REQUIRE_MOUNTPOINT \
-            DVR_DEVICE_ARCHIVE_MAX_RANGE_SECONDS; do
+            DVR_DISK_REQUIRE_MOUNTPOINT; do
             grep -q "^${key}=" deploy/env/node.env.example
             grep -q "${key}" docs/ENVIRONMENT.md
           done
 
           grep -q 'Master не генерирует UUID' deploy/env/node.env.example
           ! grep -q 'PASTE_.*_FROM_MASTER' deploy/env/node.env.example
+          ! grep -E -q '^DVR_(HIKVISION|DEVICE_ARCHIVE)_[A-Z0-9_]+=' deploy/env/node.env.example
+          ! grep -E -q '^DVR_(HIKVISION|DEVICE_ARCHIVE)_[A-Z0-9_]+=' docs/ENVIRONMENT.md
 
       - name: Build DVR engine and validate production runtime
         working-directory: dvr-engine
