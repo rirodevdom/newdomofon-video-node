@@ -3,13 +3,11 @@ export interface CameraConfig {
   name: string;
   stream_name: string;
   source_url: string;
-  archive_storage?: 'node' | 'device' | 'both';
   rtmp_push_url: string | null;
   retention_days: number;
   is_enabled: boolean;
   device_id?: string | null;
   device_connection_type?: string | null;
-  device_archive_storage?: 'node' | 'device' | 'both' | null;
   device_host?: string | null;
   device_port?: number | null;
   device_username?: string | null;
