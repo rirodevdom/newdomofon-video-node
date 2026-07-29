@@ -1,0 +1,44 @@
+name: Vendor-neutral video node
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - refactor/remove-hikvision-isapi
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dvr-engine/package-lock.json
+
+      - name: Validate removed runtime boundary
+        run: |
+          test ! -e dvr-engine/src/hikvisionEvents.ts
+          test ! -e dvr-engine/src/hikvisionArchive.ts
+          test ! -e dvr-engine/src/deviceArchive.ts
+          test ! -e dvr-engine/src/deviceArchiveIndexer.ts
+          ! grep -R -n -E 'ISAPI|alertStream|device-archive|DVR_HIKVISION_|DVR_DEVICE_ARCHIVE_' \
+            dvr-engine/src deploy scripts docs README.md \
+            --exclude='remove-hikvision-runtime.py'
+          python3 -m py_compile scripts/remove-hikvision-runtime.py
+
+      - name: Build DVR engine
+        working-directory: dvr-engine
+        run: |
+          npm ci --include=dev
+          npm run build
+
+      - name: Verify compiled output
+        run: |
+          test -s dvr-engine/dist/index.js
+          test ! -e dvr-engine/dist/hikvisionEvents.js
+          test ! -e dvr-engine/dist/hikvisionArchive.js
+          test ! -e dvr-engine/dist/deviceArchive.js
+          test ! -e dvr-engine/dist/deviceArchiveIndexer.js
