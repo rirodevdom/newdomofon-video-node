@@ -94,8 +94,8 @@ jobs:
 
           grep -q 'Master не генерирует UUID' deploy/env/node.env.example
           ! grep -q 'PASTE_.*_FROM_MASTER' deploy/env/node.env.example
-          ! grep -E -q 'DVR_HIKVISION_|DVR_DEVICE_ARCHIVE_' deploy/env/node.env.example
-          ! grep -E -q 'DVR_HIKVISION_|DVR_DEVICE_ARCHIVE_' docs/ENVIRONMENT.md
+          ! grep -E -q '^DVR_(HIKVISION|DEVICE_ARCHIVE)_[A-Z0-9_]+=' deploy/env/node.env.example
+          ! grep -E -q '^DVR_(HIKVISION|DEVICE_ARCHIVE)_[A-Z0-9_]+=' docs/ENVIRONMENT.md
 
       - name: Build DVR engine and validate production runtime
         working-directory: dvr-engine
