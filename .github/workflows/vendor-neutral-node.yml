@@ -35,6 +35,10 @@ jobs:
           npm ci --include=dev
           npm run build
 
+      - name: Test fast local archive lookup
+        working-directory: dvr-engine
+        run: node --test --import tsx test/storageArchiveLookup.test.ts
+
       - name: Verify compiled output
         run: |
           test -s dvr-engine/dist/index.js

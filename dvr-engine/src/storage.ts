@@ -27,26 +27,59 @@ export async function ensureStreamDirs(streamName: string): Promise<void> {
   await fs.mkdir(path.join(root, streamName), { recursive: true });
 }
 
-export async function listSegments(streamName: string, start: Date, end: Date): Promise<SegmentInfo[]> {
-  if (!safeStreamName(streamName)) return [];
-  const segments = new Map<string, SegmentInfo>();
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
 
-  async function walk(root: string, dir: string) {
+function archiveHourDirectory(date: Date): string {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}/${pad2(date.getHours())}`;
+}
+
+function archiveHourDirectories(start: Date, end: Date): string[] {
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end < start) return [];
+
+  const first = new Date(start);
+  first.setMinutes(0, 0, 0);
+  const last = new Date(end);
+  last.setMinutes(0, 0, 0);
+
+  const directories: string[] = [];
+  let cursor = first;
+  let guard = 0;
+  while (cursor <= last && guard < 24 * 370) {
+    directories.push(archiveHourDirectory(cursor));
+    const next = new Date(cursor);
+    next.setHours(next.getHours() + 1);
+    // A timezone transition must never make the iterator stall.
+    cursor = next.getTime() > cursor.getTime()
+      ? next
+      : new Date(cursor.getTime() + 60 * 60 * 1000);
+    guard += 1;
+  }
+  return [...new Set(directories)];
+}
+
+async function listSegmentsFromRoot(
+  root: string,
+  hourDirectories: string[],
+  start: Date,
+  end: Date,
+  segments: Map<string, SegmentInfo>
+): Promise<void> {
+  for (const relativeHour of hourDirectories) {
+    const dir = path.join(root, relativeHour);
     let entries: import('node:fs').Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {
-      return;
+      continue;
     }
+
     for (const entry of entries) {
-      const abs = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(root, abs);
-        continue;
-      }
-      if (!entry.name.endsWith('.ts')) continue;
+      if (entry.isDirectory() || !entry.name.endsWith('.ts')) continue;
       const ts = parseTimestampFromSegment(entry.name);
       if (!ts || ts < start || ts > end) continue;
+      const abs = path.join(dir, entry.name);
       const relativePath = path.relative(root, abs).split(path.sep).join('/');
       const key = `${ts.getTime()}\0${relativePath}`;
       if (!segments.has(key)) {
@@ -58,8 +91,25 @@ export async function listSegments(streamName: string, start: Date, end: Date): 
       }
     }
   }
+}
 
-  for (const root of streamRoots(streamName)) await walk(root, root);
+export async function listSegments(streamName: string, start: Date, end: Date): Promise<SegmentInfo[]> {
+  if (!safeStreamName(streamName)) return [];
+  const segments = new Map<string, SegmentInfo>();
+  const hourDirectories = archiveHourDirectories(start, end);
+  if (!hourDirectories.length) return [];
+
+  // Recorder segments are stored as YYYY-MM-DD/HH/YYYYMMDD_HHMMSS.ts. The old
+  // implementation recursively traversed every retained day for every archive
+  // request and only filtered timestamps afterwards. With a 14-day retention
+  // this means reading tens or hundreds of thousands of directory entries even
+  // when SmartYard asks for only a few minutes or hours. Read only the hour
+  // directories intersecting the requested interval, while still checking all
+  // storage roots so archives survive disk-pool changes.
+  await Promise.all(
+    streamRoots(streamName).map((root) => listSegmentsFromRoot(root, hourDirectories, start, end, segments))
+  );
+
   return [...segments.values()].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 }
 
