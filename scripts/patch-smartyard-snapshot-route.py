@@ -6,6 +6,14 @@ from pathlib import Path
 
 IMPORT_LINE = "import { registerSnapshotRoute } from './snapshot.js';\n"
 REGISTER_LINE = "registerSnapshotRoute(app);\n"
+FAST_SNAPSHOT_MARKERS = (
+    "async function latestCompletedLiveSegment",
+    "const SNAPSHOT_CACHE_TTL_MS",
+    "const SNAPSHOT_STALE_MAX_AGE_MS",
+    "const snapshotJobs = new Map",
+    "x-newdomofon-snapshot-cache",
+    "source: 'live-segment'",
+)
 
 
 def patch_index(path: Path) -> bool:
@@ -37,6 +45,13 @@ def patch_index(path: Path) -> bool:
     return changed
 
 
+def validate_snapshot(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    missing = [marker for marker in FAST_SNAPSHOT_MARKERS if marker not in text]
+    if missing:
+        raise RuntimeError(f"fast snapshot runtime markers are missing: {', '.join(missing)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", default="/opt/newdomofon-video-node")
@@ -52,7 +67,9 @@ def main() -> int:
         raise SystemExit(f"Snapshot source not found: {snapshot}")
 
     changed = patch_index(index)
+    validate_snapshot(snapshot)
     print("SmartYard snapshot route prepared" if changed else "SmartYard snapshot route already prepared")
+    print("Fast snapshot cache runtime validated")
     return 0
 
 
