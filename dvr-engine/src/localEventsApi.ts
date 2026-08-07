@@ -1,4 +1,5 @@
 import type { Express, NextFunction, Request, Response } from 'express';
+import { attachEventIntervals } from './eventIntervals.js';
 import { requireMediaToken } from './mediaAuth.js';
 import {
   getLocalEventStoreHealth,
@@ -90,15 +91,20 @@ export function registerLocalEventRoutes(app: Express): void {
           : 5000;
         const type = String(req.query.type || '').trim() || undefined;
 
+        const rawItems = listLocalEvents({
+          streamName: req.params.streamName,
+          start: range.start,
+          end: range.end,
+          type,
+          limit
+        });
+        const items = attachEventIntervals(rawItems);
+
         res.setHeader('cache-control', 'no-store');
         return res.json({
-          items: listLocalEvents({
-            streamName: req.params.streamName,
-            start: range.start,
-            end: range.end,
-            type,
-            limit
-          })
+          items,
+          raw_count: rawItems.length,
+          interval_count: items.filter((item) => item.end_at).length
         });
       } catch (error) {
         return routeError(error, req, res, next);
