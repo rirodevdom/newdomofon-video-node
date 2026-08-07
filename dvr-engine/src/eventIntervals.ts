@@ -35,7 +35,11 @@ export function attachEventIntervals(items: LocalCameraEvent[]): LocalCameraEven
 
     const key = intervalKey(event);
     if (state) {
-      if (!active.has(key)) active.set(key, event);
+      // A collector/session restart may produce another active sample before
+      // the matching inactive sample is observed. Keep the most recent start
+      // so a missing stop can never turn one stale active row into an
+      // hours-long interval.
+      active.set(key, event);
       continue;
     }
 
