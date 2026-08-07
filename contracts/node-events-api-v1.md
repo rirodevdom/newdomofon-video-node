@@ -54,13 +54,13 @@ Query:
 - `limit` — 1..5000;
 - `token` — HMAC token scope `events`.
 
-Response:
+Response сохраняет исходные state-transition события. Для активного события, у которого в этой же выборке найдено соответствующее завершающее состояние, node дополнительно прикладывает интервал. Это позволяет промежуточному proxy отфильтровать `false`, не потеряв фактический конец motion-события.
 
 ```json
 {
   "items": [
     {
-      "id": "uuid",
+      "id": "uuid-start",
       "camera_id": "uuid",
       "stream_name": "camera_stream",
       "event_type": "motion",
@@ -69,11 +69,39 @@ Response:
       "source_name": "VideoSource_1",
       "occurred_at": "2026-07-10T12:32:15.250Z",
       "created_at": "2026-07-10T12:32:15.310Z",
+      "start_at": "2026-07-10T12:32:15.250Z",
+      "end_at": "2026-07-10T12:32:21.900Z",
+      "duration_ms": 6650,
+      "data": {
+        "interval": {
+          "complete": true,
+          "start_at": "2026-07-10T12:32:15.250Z",
+          "end_at": "2026-07-10T12:32:21.900Z",
+          "duration_ms": 6650,
+          "start_event_id": "uuid-start",
+          "end_event_id": "uuid-end"
+        }
+      }
+    },
+    {
+      "id": "uuid-end",
+      "camera_id": "uuid",
+      "stream_name": "camera_stream",
+      "event_type": "motion",
+      "event_state": "false",
+      "topic": "RuleEngine/CellMotionDetector/Motion",
+      "source_name": "VideoSource_1",
+      "occurred_at": "2026-07-10T12:32:21.900Z",
+      "created_at": "2026-07-10T12:32:21.950Z",
       "data": {}
     }
-  ]
+  ],
+  "raw_count": 2,
+  "interval_count": 1
 }
 ```
+
+`items` остаётся обратно совместимым: `true/false` записи не удаляются и не заменяются. `start_at`, `end_at`, `duration_ms` и `data.interval` являются дополнительными полями только для успешно сопоставленной пары start/end. `data.interval` намеренно дублирует границы интервала, потому что совместимые proxy могут сохранять `data`, но отбрасывать незнакомые top-level поля.
 
 ### `GET /cameras/:streamName/events/summary`
 
